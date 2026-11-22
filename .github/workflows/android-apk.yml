@@ -4,12 +4,6 @@ on:
   push:
     branches:
       - android-native-downloader
-    paths:
-      - 'app/**'
-      - '*.gradle'
-      - 'settings.gradle'
-      - 'gradle.properties'
-      - '.github/workflows/android-apk.yml'
   workflow_dispatch:
 
 permissions:
