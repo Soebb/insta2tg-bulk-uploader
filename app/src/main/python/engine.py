@@ -345,7 +345,8 @@ def start(files_dir, settings_json):
         if ACTIVE:
             LOG.warning("A queue is already active.")
             return "Queue already running"
-        STOP.clear()
+        if not CONFIG.get("STOP_REQUESTED"):
+            STOP.clear()
         PAUSED.set()
         run_queue()
         return "Queue finished"
