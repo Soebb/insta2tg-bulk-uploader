@@ -4,6 +4,7 @@ The Android service calls start(files_dir, settings_json). All progress is writt
 to downloader.log so the UI can display diagnostics without requiring ADB.
 """
 import hashlib
+import http.client
 import json
 import logging
 from logging.handlers import RotatingFileHandler
@@ -81,46 +82,110 @@ def db_open():
 
 
 def telegram_request(method, fields=None, files=None):
+    """Stream multipart uploads to Telegram without buffering whole media files in RAM."""
     token = CONFIG["BOT_TOKEN"]
-    boundary = "----AndroidBulkBoundary" + str(int(time.time() * 1000))
-    body = bytearray()
     fields = fields or {}
+    files = files or {}
+    boundary = "----AndroidBulkBoundary" + hashlib.sha1(
+        ("%s-%s" % (time.time_ns(), threading.get_ident())).encode()
+    ).hexdigest()
+    boundary_bytes = boundary.encode("ascii")
+
+    field_parts = []
     for key, value in fields.items():
-        body.extend(("--" + boundary + "\r\n").encode())
-        body.extend(('Content-Disposition: form-data; name="%s"\r\n\r\n' % key).encode())
-        body.extend(str(value).encode("utf-8"))
-        body.extend(b"\r\n")
-    for key, path in (files or {}).items():
-        path = Path(path)
-        body.extend(("--" + boundary + "\r\n").encode())
-        body.extend(('Content-Disposition: form-data; name="%s"; filename="%s"\r\n' % (key, path.name)).encode())
-        body.extend(b"Content-Type: application/octet-stream\r\n\r\n")
-        with path.open("rb") as stream:
-            while True:
-                chunk = stream.read(1024 * 1024)
-                if not chunk:
-                    break
-                body.extend(chunk)
-        body.extend(b"\r\n")
-    body.extend(("--" + boundary + "--\r\n").encode())
-    request = urllib.request.Request(
-        "https://api.telegram.org/bot%s/%s" % (token, method),
-        data=bytes(body),
-        headers={"Content-Type": "multipart/form-data; boundary=" + boundary},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=180) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")
-        raise RuntimeError("Telegram HTTP %s: %s" % (exc.code, detail[:1000]))
-    if not payload.get("ok"):
-        params = payload.get("parameters") or {}
-        if params.get("retry_after"):
-            raise RuntimeError("Telegram rate limit: retry after %s seconds" % params["retry_after"])
-        raise RuntimeError("Telegram API: " + str(payload.get("description", payload)))
-    return payload.get("result")
+        part = (
+            b"--" + boundary_bytes + b"\\r\\n"
+            + ('Content-Disposition: form-data; name="%s"\\r\\n\\r\\n' % key).encode("utf-8")
+            + str(value).encode("utf-8") + b"\\r\\n"
+        )
+        field_parts.append(part)
+
+    file_parts = []
+    for key, file_path in files.items():
+        path = Path(file_path)
+        if not path.is_file():
+            raise FileNotFoundError("Upload file does not exist: %s" % path.name)
+        header = (
+            b"--" + boundary_bytes + b"\\r\\n"
+            + ('Content-Disposition: form-data; name="%s"; filename="%s"\\r\\n' %
+               (key, path.name.replace('"', "_"))).encode("utf-8")
+            + b"Content-Type: application/octet-stream\\r\\n\\r\\n"
+        )
+        file_parts.append((header, path))
+    closing = b"--" + boundary_bytes + b"--\\r\\n"
+    content_length = sum(map(len, field_parts)) + len(closing)
+    content_length += sum(len(header) + path.stat().st_size + 2 for header, path in file_parts)
+    total_bytes = content_length
+
+    for attempt in range(1, 4):
+        connection = None
+        sent_bytes = 0
+        try:
+            connection = http.client.HTTPSConnection("api.telegram.org", timeout=240)
+            connection.putrequest("POST", "/bot%s/%s" % (token, method))
+            connection.putheader("Content-Type", "multipart/form-data; boundary=%s" % boundary)
+            connection.putheader("Content-Length", str(content_length))
+            connection.putheader("Connection", "close")
+            connection.endheaders()
+
+            def send_piece(data):
+                nonlocal sent_bytes
+                connection.send(data)
+                sent_bytes += len(data)
+
+            for part in field_parts:
+                send_piece(part)
+            for header, path in file_parts:
+                send_piece(header)
+                with path.open("rb") as stream:
+                    while True:
+                        chunk = stream.read(256 * 1024)
+                        if not chunk:
+                            break
+                        send_piece(chunk)
+                send_piece(b"\\r\\n")
+            send_piece(closing)
+
+            response = connection.getresponse()
+            raw = response.read()
+            try:
+                payload = json.loads(raw.decode("utf-8", "replace"))
+            except Exception:
+                payload = {"ok": False, "description": "Telegram returned an unreadable response: %s" %
+                           raw[:500].decode("utf-8", "replace")}
+            if response.status >= 500 and attempt < 3:
+                LOG.warning("Telegram returned HTTP %s for %s (attempt %d/3); retrying.",
+                            response.status, method, attempt)
+                time.sleep(attempt * 3)
+                continue
+            if response.status >= 400:
+                raise RuntimeError("Telegram HTTP %s: %s" %
+                                   (response.status, payload.get("description", payload)))
+            if not payload.get("ok"):
+                params = payload.get("parameters") or {}
+                if params.get("retry_after") and attempt < 3:
+                    delay = min(int(params["retry_after"]), 30)
+                    LOG.warning("Telegram rate limit for %s; retrying after %d seconds.",
+                                method, delay)
+                    time.sleep(delay)
+                    continue
+                raise RuntimeError("Telegram API: " + str(payload.get("description", payload)))
+            return payload.get("result")
+        except (http.client.RemoteDisconnected, http.client.IncompleteRead,
+                TimeoutError, OSError, http.client.HTTPException) as exc:
+            if attempt >= 3:
+                raise RuntimeError(
+                    "Telegram upload connection failed after 3 attempts (%s); "
+                    "sent %d of %d bytes. Check network stability and try again."
+                    % (type(exc).__name__, sent_bytes, total_bytes)
+                ) from exc
+            LOG.warning("Telegram connection interrupted during %s (attempt %d/3, %d/%d bytes); retrying.",
+                        method, attempt, sent_bytes, total_bytes)
+            time.sleep(attempt * 3)
+        finally:
+            if connection is not None:
+                connection.close()
+    raise RuntimeError("Telegram upload failed after retries.")
 
 
 def send_album(files, caption, chat_id):
