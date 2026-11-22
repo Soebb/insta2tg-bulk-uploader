@@ -5,12 +5,15 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.IBinder;
 
 import com.chaquo.python.PyObject;
 import com.chaquo.python.Python;
 import com.chaquo.python.android.AndroidPlatform;
+
+import org.json.JSONObject;
 
 public class DownloaderService extends Service {
     public static final String ACTION_START = "com.soebb.instabulk.START";
@@ -19,6 +22,7 @@ public class DownloaderService extends Service {
     public static final String ACTION_STOP = "com.soebb.instabulk.STOP";
     private static final String CHANNEL = "downloader";
     private Thread worker;
+    private volatile PyObject engine;
 
     @Override public void onCreate() {
         super.onCreate();
@@ -28,27 +32,50 @@ public class DownloaderService extends Service {
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent == null ? ACTION_START : intent.getAction();
         if (ACTION_PAUSE.equals(action) || ACTION_RESUME.equals(action) || ACTION_STOP.equals(action)) {
-            if (Python.isStarted()) {
-                PyObject engine = Python.getInstance().getModule("engine");
-                engine.callAttr(action.substring(action.lastIndexOf('.') + 1).toLowerCase());
-            }
-            if (ACTION_STOP.equals(action)) stopForeground(true);
+            Thread control = new Thread(() -> {
+                try {
+                    if (engine != null) {
+                        String method = ACTION_PAUSE.equals(action) ? "pause" :
+                            ACTION_RESUME.equals(action) ? "resume" : "stop";
+                        engine.callAttr(method);
+                    } else {
+                        android.util.Log.w("InstagramBulk", "Control ignored: engine is not initialized yet.");
+                    }
+                } catch (Exception e) {
+                    android.util.Log.e("InstagramBulk", "Could not send engine control", e);
+                }
+            }, "downloader-control");
+            control.start();
+            if (ACTION_STOP.equals(action)) updateNotification("Stopping after current safe step…");
             return START_STICKY;
         }
+
         startForeground(1, notification("Preparing downloader…"));
         if (worker == null || !worker.isAlive()) {
             worker = new Thread(() -> {
                 try {
                     if (!Python.isStarted()) Python.start(new AndroidPlatform(this));
-                    PyObject engine = Python.getInstance().getModule("engine");
-                    String result = engine.callAttr("initialize", getFilesDir().getAbsolutePath()).toString();
+                    engine = Python.getInstance().getModule("engine");
+                    SharedPreferences p = getSharedPreferences("settings", MODE_PRIVATE);
+                    JSONObject config = new JSONObject();
+                    for (String key : new String[]{"BOT_TOKEN", "API_ID", "API_HASH", "TARGET_CHAT_ID", "OWNER_ID", "BACKUP_CHAT_ID"}) {
+                        config.put(key, p.getString(key, ""));
+                    }
+                    config.put("REQUEST_DELAY", "2");
+                    String result = engine.callAttr("start", getFilesDir().getAbsolutePath(), config.toString()).toString();
                     updateNotification(result);
                 } catch (Exception e) {
                     updateNotification("Error: " + e.getMessage());
                     android.util.Log.e("InstagramBulk", "Python engine failed", e);
+                } finally {
+                    engine = null;
+                    stopForeground(false);
+                    stopSelf();
                 }
             }, "downloader-worker");
             worker.start();
+        } else {
+            updateNotification("Downloader is already running.");
         }
         return START_STICKY;
     }
