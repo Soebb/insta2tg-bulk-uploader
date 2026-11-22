@@ -3,6 +3,8 @@ package com.soebb.instabulk;
 import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
+import android.content.ClipboardManager;
+import android.content.ClipData;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.net.Uri;
@@ -21,6 +23,7 @@ import android.widget.Toast;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.RandomAccessFile;
 
 public class MainActivity extends Activity {
     private static final int PICK_LINKS = 41;
@@ -145,9 +148,15 @@ public class MainActivity extends Activity {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         root.addView(logScroll, new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(260)));
+        LinearLayout logActions = new LinearLayout(this);
+        logActions.setOrientation(LinearLayout.HORIZONTAL);
         Button refreshLog = button("Refresh log");
-        root.addView(refreshLog);
+        Button copyLog = button("Copy log");
+        logActions.addView(refreshLog, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        logActions.addView(copyLog, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        root.addView(logActions);
         refreshLog.setOnClickListener(v -> refreshLogs());
+        copyLog.setOnClickListener(v -> copyLogs());
     }
 
     private EditText field(LinearLayout root, String hint, boolean secret) {
@@ -211,13 +220,39 @@ public class MainActivity extends Activity {
             return;
         }
         try {
-            byte[] bytes = java.nio.file.Files.readAllBytes(logFile.toPath());
-            int start = Math.max(0, bytes.length - 48000);
-            String content = new String(bytes, start, bytes.length - start, java.nio.charset.StandardCharsets.UTF_8);
+            String content;
+            try (RandomAccessFile file = new RandomAccessFile(logFile, "r")) {
+                long length = file.length();
+                long start = Math.max(0, length - 48000);
+                file.seek(start);
+                byte[] bytes = new byte[(int) (length - start)];
+                file.readFully(bytes);
+                content = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+            }
+            // Keep the current scroll position so new log lines cannot pull the screen away.
             logView.setText(content.isEmpty() ? "Log file is empty." : content);
-            logScroll.post(() -> logScroll.fullScroll(ScrollView.FOCUS_DOWN));
         } catch (Exception e) {
             logView.setText("Could not read log: " + e.getMessage());
+        }
+    }
+
+    private void copyLogs() {
+        if (!logFile.exists()) {
+            toast("No log file to copy");
+            return;
+        }
+        try (RandomAccessFile file = new RandomAccessFile(logFile, "r")) {
+            long length = file.length();
+            long start = Math.max(0, length - 48000);
+            file.seek(start);
+            byte[] bytes = new byte[(int) (length - start)];
+            file.readFully(bytes);
+            String content = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+            ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            clipboard.setPrimaryClip(ClipData.newPlainText("Downloader log", content));
+            toast("Latest log copied to clipboard");
+        } catch (Exception e) {
+            toast("Could not copy log: " + e.getMessage());
         }
     }
 
