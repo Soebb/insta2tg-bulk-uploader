@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.env
+*.session*
+progress.sqlite3*
+downloader.log
+downloads/
+links.txt
+.venv/
