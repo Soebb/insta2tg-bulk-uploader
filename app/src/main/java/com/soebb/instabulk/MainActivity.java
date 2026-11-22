@@ -8,7 +8,8 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.provider.OpenableColumns;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
@@ -23,20 +24,40 @@ import java.io.InputStream;
 
 public class MainActivity extends Activity {
     private static final int PICK_LINKS = 41;
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Runnable logRefresh = new Runnable() {
+        @Override public void run() {
+            refreshLogs();
+            handler.postDelayed(this, 1200);
+        }
+    };
     private EditText botToken, apiId, apiHash, targetChat, ownerId, backupChat;
-    private TextView linksLabel, statusLabel;
-    private File linksFile;
+    private TextView linksLabel, statusLabel, logView;
+    private ScrollView logScroll;
+    private File linksFile, logFile;
     private SharedPreferences prefs;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         prefs = getSharedPreferences("settings", MODE_PRIVATE);
         linksFile = new File(getFilesDir(), "links.txt");
+        logFile = new File(getFilesDir(), "downloader.log");
         buildScreen();
         loadSettings();
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 7);
         }
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        handler.removeCallbacks(logRefresh);
+        handler.post(logRefresh);
+    }
+
+    @Override protected void onPause() {
+        handler.removeCallbacks(logRefresh);
+        super.onPause();
     }
 
     private void buildScreen() {
@@ -103,16 +124,37 @@ public class MainActivity extends Activity {
         statusLabel = new TextView(this);
         statusLabel.setText("Idle");
         statusLabel.setTextSize(15);
-        statusLabel.setPadding(0, dp(18), 0, 0);
+        statusLabel.setPadding(0, dp(18), 0, dp(14));
         root.addView(statusLabel);
+
+        TextView logTitle = new TextView(this);
+        logTitle.setText("Activity log");
+        logTitle.setTextSize(18);
+        logTitle.setPadding(0, dp(12), 0, dp(8));
+        root.addView(logTitle);
+
+        logScroll = new ScrollView(this);
+        logScroll.setFillViewport(true);
+        logView = new TextView(this);
+        logView.setText("Waiting for downloader logs…");
+        logView.setTextSize(12);
+        logView.setTextIsSelectable(true);
+        logView.setPadding(dp(10), dp(10), dp(10), dp(10));
+        logView.setBackgroundColor(0xFFEFEFEF);
+        logScroll.addView(logView, new ScrollView.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(logScroll, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(260)));
+        Button refreshLog = button("Refresh log");
+        root.addView(refreshLog);
+        refreshLog.setOnClickListener(v -> refreshLogs());
     }
 
     private EditText field(LinearLayout root, String hint, boolean secret) {
         EditText edit = new EditText(this);
         edit.setSingleLine(true);
         edit.setHint(hint);
-        if (secret) edit.setInputType(129);
-        else edit.setInputType(1);
+        edit.setInputType(secret ? 129 : 1);
         root.addView(edit, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)));
         return edit;
     }
@@ -160,6 +202,23 @@ public class MainActivity extends Activity {
     private void sendControl(String action) {
         Intent intent = new Intent(this, DownloaderService.class).setAction(action);
         startService(intent);
+    }
+
+    private void refreshLogs() {
+        if (logView == null) return;
+        if (!logFile.exists()) {
+            logView.setText("No log file yet. Start the downloader to see activity here.");
+            return;
+        }
+        try {
+            byte[] bytes = java.nio.file.Files.readAllBytes(logFile.toPath());
+            int start = Math.max(0, bytes.length - 48000);
+            String content = new String(bytes, start, bytes.length - start, java.nio.charset.StandardCharsets.UTF_8);
+            logView.setText(content.isEmpty() ? "Log file is empty." : content);
+            logScroll.post(() -> logScroll.fullScroll(ScrollView.FOCUS_DOWN));
+        } catch (Exception e) {
+            logView.setText("Could not read log: " + e.getMessage());
+        }
     }
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
