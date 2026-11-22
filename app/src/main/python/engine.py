@@ -6,6 +6,7 @@ to downloader.log so the UI can display diagnostics without requiring ADB.
 import hashlib
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import shutil
 import sqlite3
@@ -52,7 +53,7 @@ def setup_logging(root):
     logger.handlers.clear()
     logger.propagate = False
     formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
-    file_handler = logging.FileHandler(str(log_path), encoding="utf-8")
+    file_handler = RotatingFileHandler(str(log_path), maxBytes=1024 * 1024, backupCount=2, encoding="utf-8")
     file_handler.setFormatter(formatter)
     file_handler.addFilter(ConsecutiveDuplicateFilter())
     logger.addHandler(file_handler)
