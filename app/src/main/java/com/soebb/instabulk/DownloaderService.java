@@ -58,6 +58,10 @@ public class DownloaderService extends Service {
                 }
             }, "downloader-control");
             control.start();
+            if ((worker == null || !worker.isAlive()) && ACTION_STOP.equals(action)) {
+                stopRequested = false;
+                stopSelf();
+            }
             return START_STICKY;
         }
 
@@ -76,6 +80,7 @@ public class DownloaderService extends Service {
                     }
                     config.put("REQUEST_DELAY", "2");
                     config.put("STOP_REQUESTED", stopRequested);
+                    config.put("PAUSE_REQUESTED", pauseRequested);
                     String result = engine.callAttr("start", getFilesDir().getAbsolutePath(), config.toString()).toString();
                     updateNotification(result);
                 } catch (Exception e) {
