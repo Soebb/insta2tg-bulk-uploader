@@ -138,6 +138,19 @@ public class MainActivity extends Activity {
 
         logScroll = new ScrollView(this);
         logScroll.setFillViewport(true);
+        // This ScrollView is nested inside the screen ScrollView. Give it
+        // exclusive touch handling while the user is interacting with the log.
+        logScroll.setOnTouchListener((view, event) -> {
+            int action = event.getActionMasked();
+            if (action == android.view.MotionEvent.ACTION_DOWN ||
+                action == android.view.MotionEvent.ACTION_MOVE) {
+                scroll.requestDisallowInterceptTouchEvent(true);
+            } else if (action == android.view.MotionEvent.ACTION_UP ||
+                       action == android.view.MotionEvent.ACTION_CANCEL) {
+                scroll.requestDisallowInterceptTouchEvent(false);
+            }
+            return false;
+        });
         logView = new TextView(this);
         logView.setText("Waiting for downloader logs…");
         logView.setTextSize(12);
