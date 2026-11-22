@@ -229,8 +229,10 @@ public class MainActivity extends Activity {
                 file.readFully(bytes);
                 content = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
             }
-            // Keep the current scroll position so new log lines cannot pull the screen away.
+            // Preserve the reader's current position; never force-scroll to the newest line.
+            int previousY = logScroll.getScrollY();
             logView.setText(content.isEmpty() ? "Log file is empty." : content);
+            logScroll.post(() -> logScroll.scrollTo(0, previousY));
         } catch (Exception e) {
             logView.setText("Could not read log: " + e.getMessage());
         }
