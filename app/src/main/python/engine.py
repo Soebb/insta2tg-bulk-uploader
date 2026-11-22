@@ -173,6 +173,15 @@ def telegram_request(method, fields=None, files=None):
             return payload.get("result")
         except (http.client.RemoteDisconnected, http.client.IncompleteRead,
                 TimeoutError, OSError, http.client.HTTPException) as exc:
+            # If the complete request body was transmitted, Telegram may already
+            # have accepted it even though its response was lost. Do not resend
+            # automatically in that ambiguous case, to avoid duplicate posts.
+            if sent_bytes >= total_bytes:
+                raise RuntimeError(
+                    "Telegram connection closed after all %d upload bytes were sent; "
+                    "delivery status is unknown. Check the destination chat before retrying."
+                    % total_bytes
+                ) from exc
             if attempt >= 3:
                 raise RuntimeError(
                     "Telegram upload connection failed after 3 attempts (%s); "
@@ -352,6 +361,10 @@ def run_queue():
                     if sent and sent[0] == sig and sent[1] == "sent":
                         LOG.info("Album %d already sent; skipping.", chunk_no + 1)
                         continue
+                    upload_bytes = sum(item["path"].stat().st_size for item in chunk)
+                    LOG.info("[%d/%d] Uploading batch %d/%d: %d file(s), %.1f MB.",
+                             index, len(links), chunk_no + 1, len(chunks), len(chunk),
+                             upload_bytes / (1024.0 * 1024.0))
                     if len(chunk) == 1:
                         send_single(chunk[0], caption if chunk_no == 0 else "", CONFIG["TARGET_CHAT_ID"])
                     else:
