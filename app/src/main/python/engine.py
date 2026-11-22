@@ -29,17 +29,34 @@ ACTIVE = False
 CONFIG = {}
 
 
+class ConsecutiveDuplicateFilter(logging.Filter):
+    """Suppress only immediately repeated identical records."""
+    def __init__(self):
+        super().__init__()
+        self.previous = None
+
+    def filter(self, record):
+        key = (record.levelno, record.getMessage())
+        if key == self.previous:
+            return False
+        self.previous = key
+        return True
+
+
 def setup_logging(root):
     global LOG
     root.mkdir(parents=True, exist_ok=True)
     log_path = root / "downloader.log"
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(message)s",
-        handlers=[logging.FileHandler(str(log_path), encoding="utf-8"), logging.StreamHandler()],
-        force=True,
-    )
-    LOG = logging.getLogger("instagram_bulk_android")
+    logger = logging.getLogger("instagram_bulk_android")
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+    logger.propagate = False
+    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+    file_handler = logging.FileHandler(str(log_path), encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    file_handler.addFilter(ConsecutiveDuplicateFilter())
+    logger.addHandler(file_handler)
+    LOG = logger
 
 
 def log_exception(message):
@@ -131,12 +148,18 @@ def send_single(item, caption, chat_id):
 
 def extract_files(url, folder):
     folder.mkdir(parents=True, exist_ok=True)
+
+    def progress_hook(_status):
+        if STOP.is_set():
+            raise yt_dlp.utils.DownloadError("Download stopped by user")
+
     options = {
         "outtmpl": str(folder / "%(autonumber)03d-%(id)s.%(ext)s"),
         "format": "best[height=360]/best[height=480]/best[height=720]/best[height<=360]/best[height<=480]/best[height<=720]/best",
         "noplaylist": False, "ignoreerrors": False, "quiet": True, "no_warnings": True,
         "retries": 5, "fragment_retries": 5, "socket_timeout": 35,
         "merge_output_format": "mp4",
+        "progress_hooks": [progress_hook],
     }
     with yt_dlp.YoutubeDL(options) as ydl:
         info = ydl.extract_info(url, download=True)
@@ -195,7 +218,6 @@ def wait_if_paused():
 def send_database_backup(db, index, total, url):
     backup_chat = CONFIG.get("BACKUP_CHAT_ID") or CONFIG.get("OWNER_ID")
     if not backup_chat:
-        LOG.info("Backup skipped: BACKUP_CHAT_ID/OWNER_ID is empty.")
         return
     backup = ROOT / "progress-backup.sqlite3"
     try:
@@ -273,7 +295,10 @@ def run_queue():
                         updated_at=CURRENT_TIMESTAMP""", (url, chunk_no, sig))
                     db.commit()
                     LOG.info("[%d/%d] Album %d/%d sent successfully.", index, len(links), chunk_no + 1, len(chunks))
-                    time.sleep(float(CONFIG.get("REQUEST_DELAY", "2")))
+                    delay_end = time.monotonic() + max(0.0, float(CONFIG.get("REQUEST_DELAY", "2")))
+                    while time.monotonic() < delay_end:
+                        wait_if_paused()
+                        time.sleep(min(0.25, delay_end - time.monotonic()))
                 db.execute("UPDATE posts SET status='done',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE url=?", (url,))
                 db.commit()
                 LOG.info("[%d/%d] Completed successfully.", index, len(links))
@@ -283,10 +308,15 @@ def run_queue():
                 LOG.warning("Queue interrupted by user.")
                 break
             except Exception as exc:
+                if STOP.is_set():
+                    db.execute("UPDATE posts SET status='pending',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE url=?", (url,))
+                    db.commit()
+                    LOG.info("Stop acknowledged. Current item returned to pending.")
+                    break
                 db.execute("UPDATE posts SET status='failed',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE url=?",
                            (str(exc)[:1000], url))
                 db.commit()
-                LOG.exception("[%d/%d] Failed: %s", index, len(links), url)
+                LOG.exception("[%d/%d] Download or upload failed: %s", index, len(links), url)
             finally:
                 shutil.rmtree(folder, ignore_errors=True)
                 send_database_backup(db, index, len(links), url)
@@ -326,15 +356,19 @@ def start(files_dir, settings_json):
 
 def pause():
     PAUSED.clear()
-    LOG.info("Pause requested. Current network transfer will finish first.")
+    LOG.info("Pause requested; downloader will pause at the next safe checkpoint.")
 
 
 def resume():
+    was_paused = not PAUSED.is_set()
     PAUSED.set()
-    LOG.info("Resume requested.")
+    if was_paused:
+        LOG.info("Downloader resumed.")
 
 
 def stop():
+    already_stopping = STOP.is_set()
     STOP.set()
     PAUSED.set()
-    LOG.info("Stop requested. Current item will stop at the next safe checkpoint.")
+    if not already_stopping:
+        LOG.info("Stop requested; cancelling extraction and stopping at the next safe checkpoint.")
