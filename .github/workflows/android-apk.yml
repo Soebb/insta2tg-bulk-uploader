@@ -22,11 +22,20 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Build debug APK
-        uses: gradle/gradle-build-action@v3
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
         with:
-          gradle-version: '8.13'
-          arguments: assembleDebug --stacktrace
+          python-version: '3.11'
+
+      - name: Verify build tools
+        run: |
+          java -version
+          python3.11 --version
+
+      - name: Build debug APK
+        uses: gradle/actions/setup-gradle@v4
+      - name: Assemble debug APK
+        run: gradle --version && gradle assembleDebug --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
