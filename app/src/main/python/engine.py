@@ -94,9 +94,9 @@ def telegram_request(method, fields=None, files=None):
     field_parts = []
     for key, value in fields.items():
         part = (
-            b"--" + boundary_bytes + b"\\r\\n"
-            + ('Content-Disposition: form-data; name="%s"\\r\\n\\r\\n' % key).encode("utf-8")
-            + str(value).encode("utf-8") + b"\\r\\n"
+            b"--" + boundary_bytes + b"\r\n"
+            + ('Content-Disposition: form-data; name="%s"\r\n\r\n' % key).encode("utf-8")
+            + str(value).encode("utf-8") + b"\r\n"
         )
         field_parts.append(part)
 
@@ -106,13 +106,13 @@ def telegram_request(method, fields=None, files=None):
         if not path.is_file():
             raise FileNotFoundError("Upload file does not exist: %s" % path.name)
         header = (
-            b"--" + boundary_bytes + b"\\r\\n"
-            + ('Content-Disposition: form-data; name="%s"; filename="%s"\\r\\n' %
+            b"--" + boundary_bytes + b"\r\n"
+            + ('Content-Disposition: form-data; name="%s"; filename="%s"\r\n' %
                (key, path.name.replace('"', "_"))).encode("utf-8")
-            + b"Content-Type: application/octet-stream\\r\\n\\r\\n"
+            + b"Content-Type: application/octet-stream\r\n\r\n"
         )
         file_parts.append((header, path))
-    closing = b"--" + boundary_bytes + b"--\\r\\n"
+    closing = b"--" + boundary_bytes + b"--\r\n"
     content_length = sum(map(len, field_parts)) + len(closing)
     content_length += sum(len(header) + path.stat().st_size + 2 for header, path in file_parts)
     total_bytes = content_length
@@ -143,7 +143,7 @@ def telegram_request(method, fields=None, files=None):
                         if not chunk:
                             break
                         send_piece(chunk)
-                send_piece(b"\\r\\n")
+                send_piece(b"\r\n")
             send_piece(closing)
 
             response = connection.getresponse()
