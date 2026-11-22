@@ -75,6 +75,7 @@ public class DownloaderService extends Service {
                         config.put(key, p.getString(key, ""));
                     }
                     config.put("REQUEST_DELAY", "2");
+                    config.put("STOP_REQUESTED", stopRequested);
                     String result = engine.callAttr("start", getFilesDir().getAbsolutePath(), config.toString()).toString();
                     updateNotification(result);
                 } catch (Exception e) {
