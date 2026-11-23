@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - android-native-downloader
+      - kurigram-large-upload
   workflow_dispatch:
 
 permissions:
