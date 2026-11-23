@@ -209,6 +209,7 @@ def telegram_request(method, fields=None, files=None):
 
 BOT_API_UPLOAD_LIMIT = 50_000_000
 BOT_API_PHOTO_LIMIT = 10_000_000
+KURIGRAM_VIDEO_THRESHOLD = 20 * 1024 * 1024
 MTProto_BOT_UPLOAD_LIMIT = 2_000_000_000
 
 
@@ -285,6 +286,11 @@ def send_kurigram(item, caption, chat_id, force_document=False):
 def send_single(item, caption, chat_id, force_document=False):
     size = item["path"].stat().st_size
     is_video = item["is_video"]
+    # Route larger videos directly through MTProto. On slow/mobile VPN paths,
+    # avoid spending time on repeated Bot API uploads that are likely to break.
+    if is_video and size > KURIGRAM_VIDEO_THRESHOLD:
+        LOG.info("Video exceeds the 20 MiB direct-upload threshold; using Kurigram MTProto.")
+        return send_kurigram(item, caption, chat_id, force_document=force_document)
     if size > BOT_API_UPLOAD_LIMIT:
         return send_kurigram(item, caption, chat_id, force_document=force_document)
 
@@ -316,7 +322,7 @@ def send_album(files, caption, chat_id):
     # per file so small files still use the regular Bot API.
     oversized = any(
         item["path"].stat().st_size >
-        (BOT_API_UPLOAD_LIMIT if item["is_video"] else BOT_API_PHOTO_LIMIT)
+        (KURIGRAM_VIDEO_THRESHOLD if item["is_video"] else BOT_API_PHOTO_LIMIT)
         for item in files
     )
     if oversized:
