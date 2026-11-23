@@ -30,7 +30,10 @@ chaquopy {
         pip {
             install 'yt-dlp'
             options '--find-links', 'wheels'
-            install 'kurigram==2.2.27'
+            install 'pyaes==1.6.1'
+            install 'rsa==4.9.1'
+            install 'pyasn1==0.6.1'
+            install 'telethon==1.45.0'
         }
     }
 }
