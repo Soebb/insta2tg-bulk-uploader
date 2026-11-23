@@ -4,8 +4,6 @@ name: Android Debug APK
 on:
   push:
     branches:
-      - android-native-downloader
-      - kurigram-large-upload
       - telethon-https-migration
   workflow_dispatch:
 
