@@ -4,7 +4,7 @@ name: Android Debug APK
 on:
   push:
     branches:
-      - telethon-https-migration
+      - restore-yt-dlp-integration
   workflow_dispatch:
 
 permissions:
@@ -40,7 +40,7 @@ jobs:
 
       - name: Verify target branch and Android transport
         run: |
-          test "$GITHUB_REF" = "refs/heads/telethon-https-migration"
+          test "$GITHUB_REF" = "refs/heads/restore-yt-dlp-integration"
           echo "Building commit: $(git rev-parse HEAD)"
           grep -q "from telethon import TelegramClient" app/src/main/python/engine.py
           grep -q "connection=TelegramHttpsConnection" app/src/main/python/engine.py
