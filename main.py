@@ -7,7 +7,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from downloader import download_post, flatten, inspect_post, make_items
+import yt_dlp
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError
@@ -29,6 +29,7 @@ SESSION_NAME = os.getenv("SESSION_NAME", "instagram_bulk_telethon").strip()
 INPUT_FILE = Path(os.getenv("INPUT_FILE", "links.txt"))
 DOWNLOAD_DIR = Path(os.getenv("DOWNLOAD_DIR", "downloads"))
 DATABASE_FILE = Path(os.getenv("DATABASE_FILE", "progress.sqlite3"))
+DIRECT_URL_UPLOAD = os.getenv("DIRECT_URL_UPLOAD", "true").lower() in {"1", "true", "yes", "on"}
 REQUEST_DELAY = float(os.getenv("REQUEST_DELAY", "2"))
 
 if not BOT_TOKEN or not API_ID or not API_HASH or not TARGET_CHAT_ID:
@@ -167,6 +168,81 @@ def load_links():
     return result
 
 
+def flatten(info):
+    entries = info.get("entries")
+    if not entries:
+        return [info]
+    output = []
+    for entry in entries:
+        if entry:
+            output.extend(flatten(entry) if entry.get("entries") else [entry])
+    return output
+
+
+def is_video(item):
+    codec = item.get("vcodec")
+    ext = (item.get("ext") or "").lower()
+    return (codec and codec != "none") or ext in {
+        "mp4", "m4v", "mov", "webm", "mkv"
+    }
+
+
+def best_format(entry):
+    formats = [item for item in entry.get("formats", []) if item.get("url")]
+    if not formats:
+        return entry
+    videos = [item for item in formats if is_video(item)]
+    candidates = videos or formats
+    if not videos:
+        return max(
+            candidates,
+            key=lambda item: (item.get("width") or 0) * (item.get("height") or 0),
+        )
+    for height in (360, 480, 720):
+        exact = [item for item in candidates if item.get("height") == height]
+        if exact:
+            return max(exact, key=lambda item: item.get("tbr") or 0)
+    for limit in (360, 480, 720):
+        lower = [
+            item for item in candidates
+            if (item.get("height") or 0) <= limit
+        ]
+        if lower:
+            return max(
+                lower,
+                key=lambda item: (item.get("height") or 0, item.get("tbr") or 0),
+            )
+    return max(
+        candidates,
+        key=lambda item: (item.get("height") or 0, item.get("tbr") or 0),
+    )
+
+
+def make_items(info):
+    result = []
+    for entry in flatten(info):
+        fmt = best_format(entry)
+        media_url = fmt.get("url") or entry.get("url")
+        if not media_url:
+            continue
+        media_id = str(
+            entry.get("id") or hashlib.sha1(media_url.encode()).hexdigest()[:12]
+        )
+        size = (
+            fmt.get("filesize")
+            or fmt.get("filesize_approx")
+            or entry.get("filesize")
+            or entry.get("filesize_approx")
+        )
+        result.append({
+            "id": media_id,
+            "url": media_url,
+            "is_video": is_video(fmt) or is_video(entry),
+            "size": int(size) if size else None,
+        })
+    return result
+
+
 def split(items, limit=10):
     for start in range(0, len(items), limit):
         yield start // limit, items[start:start + limit]
@@ -200,6 +276,78 @@ def caption_for(index, url, description):
     return f"{index}\n{url}\n\n{description or ''}".strip()[:1024]
 
 
+async def send_direct(items, caption):
+    """Ask Telegram to fetch public media URLs using Telethon's MTProto API."""
+    urls = [item["url"] for item in items]
+    if len(urls) == 1:
+        return await app.send_file(
+            TARGET_CHAT_ID,
+            urls[0],
+            caption=caption,
+            supports_streaming=bool(items[0]["is_video"]),
+        )
+    return await app.send_file(
+        TARGET_CHAT_ID,
+        urls,
+        caption=caption,
+        supports_streaming=True,
+    )
+
+
+async def download_post(url, key):
+    folder = DOWNLOAD_DIR / key
+    folder.mkdir(parents=True, exist_ok=True)
+    options = {
+        "outtmpl": str(folder / "%(id)s.%(ext)s"),
+        "format": (
+            "best[height=360]/best[height=480]/best[height=720]/"
+            "best[height<=360]/best[height<=480]/best[height<=720]/best"
+        ),
+        "noplaylist": False,
+        "ignoreerrors": False,
+        "quiet": True,
+        "no_warnings": True,
+        "retries": 8,
+        "fragment_retries": 8,
+        "socket_timeout": 30,
+        "merge_output_format": "mp4",
+    }
+
+    def work():
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=True)
+            if not info:
+                raise RuntimeError("yt-dlp returned no media information.")
+            entries = flatten(info)
+            files = []
+            for entry in entries:
+                paths = [
+                    Path(item["filepath"])
+                    for item in entry.get("requested_downloads", [])
+                    if item.get("filepath")
+                ]
+                if entry.get("filepath"):
+                    paths.append(Path(entry["filepath"]))
+                paths.extend(folder.glob(f"{entry.get('id', '')}.*"))
+                found = next((path for path in paths if path.is_file()), None)
+                if found and found not in files:
+                    files.append(found)
+            if len(files) != len(entries):
+                remaining = [
+                    path for path in sorted(folder.iterdir())
+                    if path.is_file()
+                    and path not in files
+                    and not path.name.endswith((".part", ".ytdl"))
+                ]
+                files.extend(remaining[:len(entries) - len(files)])
+            return files
+
+    paths = await asyncio.to_thread(work)
+    if not paths:
+        raise RuntimeError("No downloaded files found.")
+    return paths
+
+
 async def send_local(items, paths, caption):
     if len(items) != len(paths):
         raise RuntimeError(
@@ -231,7 +379,16 @@ async def process_one(conn, index, total, url):
     conn.commit()
     log.info("[%d/%d] %s", index, total, url)
 
-    info = await asyncio.to_thread(inspect_post, url)
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "noplaylist": False,
+        "retries": 5,
+    }
+    info = await asyncio.to_thread(
+        lambda: yt_dlp.YoutubeDL(opts).extract_info(url, download=False)
+    )
     if not info:
         raise RuntimeError("Could not extract post.")
 
@@ -255,20 +412,30 @@ async def process_one(conn, index, total, url):
         conn.commit()
         return
 
-    # Downloading is isolated from Telegram/Telethon transport.
-    log.info("Starting isolated yt-dlp download for %s", url)
-    local_files = await asyncio.to_thread(
-        download_post, url, DOWNLOAD_DIR / key
-    )
-    log.info("yt-dlp download finished: %d local file(s).", len(local_files))
-
+    local_files = None
     for number, part, sig in work:
         await pause_event.wait()
         chunk_caption = caption if number == 0 else ""
-        start = number * 10
-        selected = local_files[start:start + len(part)]
-        await send_local(part, selected, chunk_caption)
-        log.info("Chunk %d uploaded from local files through Telethon.", number + 1)
+        direct_ok = False
+
+        if DIRECT_URL_UPLOAD and all(item.get("url") for item in part):
+            try:
+                await send_direct(part, chunk_caption)
+                direct_ok = True
+                log.info("Chunk %d sent using Telethon external-media upload.", number + 1)
+            except FloodWaitError:
+                raise
+            except Exception as exc:
+                log.warning("Telethon URL upload failed; using local fallback: %s", exc)
+
+        if not direct_ok:
+            if local_files is None:
+                local_files = await download_post(url, key)
+            start = number * 10
+            selected = local_files[start:start + len(part)]
+            await send_local(part, selected, chunk_caption)
+            log.info("Chunk %d uploaded from local files through Telethon.", number + 1)
+
         set_chunk(conn, url, number, sig)
         await asyncio.sleep(REQUEST_DELAY)
 
@@ -279,15 +446,16 @@ async def process_one(conn, index, total, url):
     )
     conn.commit()
 
-    for path in local_files:
+    if local_files:
+        for path in local_files:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                log.warning("Could not delete temporary file %s", path)
         try:
-            path.unlink(missing_ok=True)
+            (DOWNLOAD_DIR / key).rmdir()
         except OSError:
-            log.warning("Could not delete temporary file %s", path)
-    try:
-        (DOWNLOAD_DIR / key).rmdir()
-    except OSError:
-        pass
+            pass
 
 
 def allowed(event):
