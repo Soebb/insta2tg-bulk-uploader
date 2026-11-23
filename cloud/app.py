@@ -13,11 +13,10 @@ import os
 import queue
 import shutil
 import sqlite3
-import tempfile
 import threading
-import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, HttpUrl
@@ -183,6 +182,7 @@ def extract_media(url, folder, job_id):
 
 
 async def upload_media(media, caption, job_id):
+    (WORK_DIR / "kurigram").mkdir(parents=True, exist_ok=True)
     client = Client(
         name="cloud_instagram_bulk_bot",
         api_id=API_ID,
@@ -306,8 +306,10 @@ def health():
 def submit_job(payload: JobRequest, x_api_key: str = Header(default="")):
     authorize(x_api_key)
     url = str(payload.url)
-    if "instagram.com/" not in url.lower():
-        raise HTTPException(status_code=400, detail="Only Instagram URLs are accepted.")
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or host not in {"instagram.com", "www.instagram.com", "m.instagram.com"}:
+        raise HTTPException(status_code=400, detail="Only HTTPS Instagram URLs are accepted.")
     job_id = uuid.uuid4().hex
     db = connect_db()
     try:
