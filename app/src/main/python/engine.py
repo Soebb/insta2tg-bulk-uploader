@@ -282,26 +282,33 @@ def send_kurigram(item, caption, chat_id, force_document=False):
                            (type(exc).__name__, exc)) from exc
 
 
-def send_single(item, caption, chat_id):
+def send_single(item, caption, chat_id, force_document=False):
     size = item["path"].stat().st_size
     is_video = item["is_video"]
     if size > BOT_API_UPLOAD_LIMIT:
-        return send_kurigram(item, caption, chat_id)
+        return send_kurigram(item, caption, chat_id, force_document=force_document)
 
-    # Bot API sendPhoto has a stricter 10 MB upload limit. Preserve larger
-    # images as documents instead of failing a valid <=50 MB upload.
-    if not is_video and size > BOT_API_PHOTO_LIMIT:
-        fields = {"chat_id": chat_id}
-        if caption:
-            fields["caption"] = caption[:1024]
-        return telegram_request("sendDocument", fields, {"document": item["path"]})
-
-    method = "sendVideo" if is_video else "sendPhoto"
-    key = "video" if is_video else "photo"
+    # Database files and other non-media payloads must be sent as documents.
+    # Bot API sendPhoto has a stricter 10 MB upload limit, so larger images
+    # are also sent as documents instead of failing a valid <=50 MB upload.
+    use_document = force_document or (not is_video and size > BOT_API_PHOTO_LIMIT)
+    method = "sendDocument" if use_document else ("sendVideo" if is_video else "sendPhoto")
+    key = "document" if use_document else ("video" if is_video else "photo")
     fields = {"chat_id": chat_id}
     if caption:
         fields["caption"] = caption[:1024]
-    return telegram_request(method, fields, {key: item["path"]})
+    try:
+        return telegram_request(method, fields, {key: item["path"]})
+    except RuntimeError as exc:
+        # Only fall back when the Bot API connection broke before the full
+        # multipart body was sent. A lost response after a complete upload is
+        # deliberately NOT retried because Telegram may already have posted it.
+        if "Telegram upload connection failed after 3 attempts" not in str(exc):
+            raise
+        LOG.warning(
+            "Bot API upload repeatedly interrupted; retrying this file through Kurigram MTProto."
+        )
+        return send_kurigram(item, caption, chat_id, force_document=force_document)
 
 
 def send_album(files, caption, chat_id):
@@ -436,8 +443,9 @@ def send_database_backup(db, index, total, url):
         backup_item = {"path": backup, "is_video": False}
         send_single(
             backup_item,
-            "Database checkpoint after link %d/%d\\n%s" % (index, total, url),
+            "Database checkpoint after link %d/%d\n%s" % (index, total, url),
             backup_chat,
+            force_document=True,
         )
         LOG.info("Database backup sent to Telegram chat %s.", backup_chat)
     except Exception:
