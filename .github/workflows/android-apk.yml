@@ -1,11 +1,12 @@
 name: Android Debug APK
-# Includes the Kurigram MTProto upload fallback branch.
+# Includes the Telethon MTProto HTTPS upload branch.
 
 on:
   push:
     branches:
       - android-native-downloader
       - kurigram-large-upload
+      - telethon-https-migration
   workflow_dispatch:
 
 permissions:
