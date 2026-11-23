@@ -231,13 +231,6 @@ async def process_one(conn, index, total, url):
     conn.commit()
     log.info("[%d/%d] %s", index, total, url)
 
-    opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "noplaylist": False,
-        "retries": 5,
-    }
     info = await asyncio.to_thread(inspect_post, url)
     if not info:
         raise RuntimeError("Could not extract post.")
