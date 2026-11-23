@@ -21,6 +21,7 @@ public class DownloaderService extends Service {
     public static final String ACTION_RESUME = "com.soebb.instabulk.RESUME";
     public static final String ACTION_STOP = "com.soebb.instabulk.STOP";
     private static final String CHANNEL = "downloader";
+    public static volatile boolean isRunning = false;
     private Thread worker;
     private volatile PyObject engine;
     private volatile boolean stopRequested = false;
@@ -67,6 +68,7 @@ public class DownloaderService extends Service {
 
         startForeground(1, notification("Preparing downloader…"));
         if (worker == null || !worker.isAlive()) {
+            isRunning = true;
             worker = new Thread(() -> {
                 try {
                     if (!Python.isStarted()) Python.start(new AndroidPlatform(this));
@@ -90,6 +92,7 @@ public class DownloaderService extends Service {
                     engine = null;
                     stopRequested = false;
                     pauseRequested = false;
+                    isRunning = false;
                     stopForeground(false);
                     stopSelf();
                 }

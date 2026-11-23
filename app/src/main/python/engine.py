@@ -232,12 +232,32 @@ def extract_files(url, folder):
         "outtmpl": str(folder / "%(autonumber)03d-%(id)s.%(ext)s"),
         "format": "best[height=360]/best[height=480]/best[height=720]/best[height<=360]/best[height<=480]/best[height<=720]/best",
         "noplaylist": False, "ignoreerrors": False, "quiet": True, "no_warnings": True,
-        "retries": 5, "fragment_retries": 5, "socket_timeout": 35,
+        "retries": 10, "fragment_retries": 10, "extractor_retries": 5, "socket_timeout": 45,
         "merge_output_format": "mp4",
         "progress_hooks": [progress_hook],
     }
-    with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(url, download=True)
+    info = None
+    for attempt in range(1, 4):
+        try:
+            with yt_dlp.YoutubeDL(options) as ydl:
+                info = ydl.extract_info(url, download=True)
+            break
+        except Exception as exc:
+            message = str(exc).lower()
+            transient = any(marker in message for marker in (
+                "ssl", "unexpected eof", "eof occurred", "remote end closed",
+                "connection reset", "connection aborted", "timed out",
+                "temporarily unavailable", "network is unreachable"
+            ))
+            if not transient or attempt >= 3 or STOP.is_set():
+                raise
+            delay = attempt * 4
+            LOG.warning("Temporary Instagram connection error (%s), retrying extraction in %d seconds (attempt %d/3).",
+                        type(exc).__name__, delay, attempt)
+            for _ in range(delay * 4):
+                if STOP.is_set():
+                    raise InterruptedError("Download stopped by user")
+                time.sleep(0.25)
     if not info:
         raise RuntimeError("yt-dlp returned no information for this Instagram URL.")
     entries = info.get("entries") or [info]
