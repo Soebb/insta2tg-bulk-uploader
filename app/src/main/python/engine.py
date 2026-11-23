@@ -18,6 +18,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from telethon import TelegramClient
+from telegram_https import DC_HOSTS, TelegramHttpsConnection
+
 try:
     import yt_dlp
 except Exception:
@@ -209,77 +212,68 @@ def telegram_request(method, fields=None, files=None):
 
 BOT_API_UPLOAD_LIMIT = 50_000_000
 BOT_API_PHOTO_LIMIT = 10_000_000
-KURIGRAM_VIDEO_THRESHOLD = 20 * 1024 * 1024
+TELETHON_VIDEO_THRESHOLD = 20 * 1024 * 1024
 MTProto_BOT_UPLOAD_LIMIT = 2_000_000_000
 
 
-def send_kurigram(item, caption, chat_id, force_document=False):
-    """Upload one oversized file directly over MTProto using the existing bot identity."""
-    try:
-        from pyrogram import Client
-    except Exception as exc:
-        raise RuntimeError(
-            "Kurigram is unavailable. Rebuild/install the app with the bundled Kurigram package."
-        ) from exc
-
+def send_telethon(item, caption, chat_id, force_document=False):
+    """Upload a local file over Telethon MTProto using Telegram's HTTPS transport."""
     size = item["path"].stat().st_size
     if size > MTProto_BOT_UPLOAD_LIMIT:
         raise RuntimeError("This file is larger than the supported 2 GB MTProto bot upload limit.")
     api_id = str(CONFIG.get("API_ID", "")).strip()
     api_hash = str(CONFIG.get("API_HASH", "")).strip()
     if not api_id or not api_hash:
-        raise RuntimeError("API_ID and API_HASH are required for large-file MTProto uploads.")
+        raise RuntimeError("API_ID and API_HASH are required for large-file Telethon uploads.")
 
-    session_dir = ROOT / "kurigram"
+    session_dir = ROOT / "telethon"
     session_dir.mkdir(parents=True, exist_ok=True)
     last_progress = [-5]
 
     async def upload():
-        client = Client(
-            name="instagram_bulk_bot",
-            api_id=int(api_id),
-            api_hash=api_hash,
-            bot_token=CONFIG["BOT_TOKEN"],
-            workdir=str(session_dir),
-            no_updates=True,
-            sleep_threshold=60,
+        client = TelegramClient(
+            str(session_dir / "instagram_bulk_bot"),
+            int(api_id),
+            api_hash,
+            connection=TelegramHttpsConnection,
+            request_retries=5,
+            connection_retries=5,
+            retry_delay=2,
+            auto_reconnect=True,
+            flood_sleep_threshold=60,
         )
-        await client.start()
+        dc_id = client.session.dc_id if client.session.dc_id in DC_HOSTS else 2
+        client.session.set_dc(dc_id, DC_HOSTS[dc_id], 443)
+        client.session.save()
         try:
-            def progress(current, total, *_args):
+            await client.start(bot_token=CONFIG["BOT_TOKEN"])
+
+            def progress(current, total):
                 if not total:
                     return
                 percent = int(current * 100 / total)
                 if percent >= last_progress[0] + 5 or current >= total:
                     last_progress[0] = percent
-                    LOG.info("Kurigram MTProto upload: %d%% (%.1f/%.1f MB).",
+                    LOG.info("Telethon HTTPS upload: %d%% (%.1f/%.1f MB).",
                              percent, current / 1048576.0, total / 1048576.0)
 
-            common = {
-                "chat_id": chat_id,
-                "caption": (caption or "")[:1024] or None,
-                "progress": progress,
-            }
-            if item["is_video"] and not force_document:
-                await client.send_video(
-                    video=str(item["path"]),
-                    supports_streaming=True,
-                    **common
-                )
-            else:
-                await client.send_document(
-                    document=str(item["path"]),
-                    **common
-                )
+            await client.send_file(
+                chat_id,
+                str(item["path"]),
+                caption=(caption or "")[:1024] or None,
+                force_document=bool(force_document or not item["is_video"]),
+                supports_streaming=bool(item["is_video"] and not force_document),
+                progress_callback=progress,
+            )
         finally:
-            await client.stop()
+            await client.disconnect()
 
-    LOG.info("File exceeds the Bot API upload limit; using Kurigram MTProto (%.1f MB).",
+    LOG.info("File exceeds the Bot API upload threshold; using Telethon MTProto over HTTPS (%.1f MB).",
              size / 1048576.0)
     try:
         asyncio.run(upload())
     except Exception as exc:
-        raise RuntimeError("Kurigram MTProto upload failed (%s): %s" %
+        raise RuntimeError("Telethon HTTPS MTProto upload failed (%s): %s" %
                            (type(exc).__name__, exc)) from exc
 
 
@@ -288,11 +282,11 @@ def send_single(item, caption, chat_id, force_document=False):
     is_video = item["is_video"]
     # Route larger videos directly through MTProto. On slow/mobile VPN paths,
     # avoid spending time on repeated Bot API uploads that are likely to break.
-    if is_video and size > KURIGRAM_VIDEO_THRESHOLD:
-        LOG.info("Video exceeds the 20 MiB direct-upload threshold; using Kurigram MTProto.")
-        return send_kurigram(item, caption, chat_id, force_document=force_document)
+    if is_video and size > TELETHON_VIDEO_THRESHOLD:
+        LOG.info("Video exceeds the 20 MiB direct-upload threshold; using Telethon HTTPS MTProto.")
+        return send_telethon(item, caption, chat_id, force_document=force_document)
     if size > BOT_API_UPLOAD_LIMIT:
-        return send_kurigram(item, caption, chat_id, force_document=force_document)
+        return send_telethon(item, caption, chat_id, force_document=force_document)
 
     # Database files and other non-media payloads must be sent as documents.
     # Bot API sendPhoto has a stricter 10 MB upload limit, so larger images
@@ -312,9 +306,9 @@ def send_single(item, caption, chat_id, force_document=False):
         if "Telegram upload connection failed after 3 attempts" not in str(exc):
             raise
         LOG.warning(
-            "Bot API upload repeatedly interrupted; retrying this file through Kurigram MTProto."
+            "Bot API upload repeatedly interrupted; retrying this file through Telethon HTTPS MTProto."
         )
-        return send_kurigram(item, caption, chat_id, force_document=force_document)
+        return send_telethon(item, caption, chat_id, force_document=force_document)
 
 
 def send_album(files, caption, chat_id):
@@ -322,7 +316,7 @@ def send_album(files, caption, chat_id):
     # per file so small files still use the regular Bot API.
     oversized = any(
         item["path"].stat().st_size >
-        (KURIGRAM_VIDEO_THRESHOLD if item["is_video"] else BOT_API_PHOTO_LIMIT)
+        (TELETHON_VIDEO_THRESHOLD if item["is_video"] else BOT_API_PHOTO_LIMIT)
         for item in files
     )
     if oversized:
