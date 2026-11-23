@@ -30,7 +30,8 @@ jobs:
 
       - name: Build Android-compatible pure Python dependency wheels
         run: |
-          python -m pip wheel --no-deps --wheel-dir app/wheels pyaes==1.6.1
+          python -m pip wheel --no-deps --wheel-dir app/wheels \\
+            pyaes==1.6.1 rsa==4.9.1 pyasn1==0.6.1 telethon==1.45.0
 
       - name: Verify build tools
         run: |
