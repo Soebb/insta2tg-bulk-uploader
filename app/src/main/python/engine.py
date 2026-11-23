@@ -3,6 +3,7 @@
 The Android service calls start(files_dir, settings_json). All progress is written
 to downloader.log so the UI can display diagnostics without requiring ADB.
 """
+import asyncio
 import hashlib
 import http.client
 import json
@@ -206,7 +207,117 @@ def telegram_request(method, fields=None, files=None):
     raise RuntimeError("Telegram upload failed after retries.")
 
 
+BOT_API_UPLOAD_LIMIT = 50_000_000
+BOT_API_PHOTO_LIMIT = 10_000_000
+MTProto_BOT_UPLOAD_LIMIT = 2_000_000_000
+
+
+def send_kurigram(item, caption, chat_id, force_document=False):
+    """Upload one oversized file directly over MTProto using the existing bot identity."""
+    try:
+        from pyrogram import Client
+    except Exception as exc:
+        raise RuntimeError(
+            "Kurigram is unavailable. Rebuild/install the app with the bundled Kurigram package."
+        ) from exc
+
+    size = item["path"].stat().st_size
+    if size > MTProto_BOT_UPLOAD_LIMIT:
+        raise RuntimeError("This file is larger than the supported 2 GB MTProto bot upload limit.")
+    api_id = str(CONFIG.get("API_ID", "")).strip()
+    api_hash = str(CONFIG.get("API_HASH", "")).strip()
+    if not api_id or not api_hash:
+        raise RuntimeError("API_ID and API_HASH are required for large-file MTProto uploads.")
+
+    session_dir = ROOT / "kurigram"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    last_progress = [-5]
+
+    async def upload():
+        client = Client(
+            name="instagram_bulk_bot",
+            api_id=int(api_id),
+            api_hash=api_hash,
+            bot_token=CONFIG["BOT_TOKEN"],
+            workdir=str(session_dir),
+            no_updates=True,
+            sleep_threshold=60,
+        )
+        await client.start()
+        try:
+            def progress(current, total, *_args):
+                if not total:
+                    return
+                percent = int(current * 100 / total)
+                if percent >= last_progress[0] + 5 or current >= total:
+                    last_progress[0] = percent
+                    LOG.info("Kurigram MTProto upload: %d%% (%.1f/%.1f MB).",
+                             percent, current / 1048576.0, total / 1048576.0)
+
+            common = {
+                "chat_id": chat_id,
+                "caption": (caption or "")[:1024] or None,
+                "progress": progress,
+            }
+            if item["is_video"] and not force_document:
+                await client.send_video(
+                    video=str(item["path"]),
+                    supports_streaming=True,
+                    **common
+                )
+            else:
+                await client.send_document(
+                    document=str(item["path"]),
+                    **common
+                )
+        finally:
+            await client.stop()
+
+    LOG.info("File exceeds the Bot API upload limit; using Kurigram MTProto (%.1f MB).",
+             size / 1048576.0)
+    try:
+        asyncio.run(upload())
+    except Exception as exc:
+        raise RuntimeError("Kurigram MTProto upload failed (%s): %s" %
+                           (type(exc).__name__, exc)) from exc
+
+
+def send_single(item, caption, chat_id):
+    size = item["path"].stat().st_size
+    is_video = item["is_video"]
+    if size > BOT_API_UPLOAD_LIMIT:
+        return send_kurigram(item, caption, chat_id)
+
+    # Bot API sendPhoto has a stricter 10 MB upload limit. Preserve larger
+    # images as documents instead of failing a valid <=50 MB upload.
+    if not is_video and size > BOT_API_PHOTO_LIMIT:
+        fields = {"chat_id": chat_id}
+        if caption:
+            fields["caption"] = caption[:1024]
+        return telegram_request("sendDocument", fields, {"document": item["path"]})
+
+    method = "sendVideo" if is_video else "sendPhoto"
+    key = "video" if is_video else "photo"
+    fields = {"chat_id": chat_id}
+    if caption:
+        fields["caption"] = caption[:1024]
+    return telegram_request(method, fields, {key: item["path"]})
+
+
 def send_album(files, caption, chat_id):
+    # Albums with oversized items are sent individually, choosing the transport
+    # per file so small files still use the regular Bot API.
+    oversized = any(
+        item["path"].stat().st_size >
+        (BOT_API_UPLOAD_LIMIT if item["is_video"] else BOT_API_PHOTO_LIMIT)
+        for item in files
+    )
+    if oversized:
+        results = []
+        for index, item in enumerate(files):
+            results.append(send_single(item, caption if index == 0 else "", chat_id))
+        return results
+
     media = []
     uploads = {}
     for i, item in enumerate(files):
@@ -219,15 +330,6 @@ def send_album(files, caption, chat_id):
         if i == 0 and caption:
             media[0]["caption"] = caption[:1024]
     return telegram_request("sendMediaGroup", {"chat_id": chat_id, "media": json.dumps(media)}, uploads)
-
-
-def send_single(item, caption, chat_id):
-    method = "sendVideo" if item["is_video"] else "sendPhoto"
-    key = "video" if item["is_video"] else "photo"
-    fields = {"chat_id": chat_id}
-    if caption:
-        fields["caption"] = caption[:1024]
-    return telegram_request(method, fields, {key: item["path"]})
 
 
 def extract_files(url, folder):
@@ -331,10 +433,12 @@ def send_database_backup(db, index, total, url):
             db.backup(target)
         finally:
             target.close()
-        telegram_request("sendDocument", {
-            "chat_id": backup_chat,
-            "caption": "Database checkpoint after link %d/%d\n%s" % (index, total, url),
-        }, {"document": backup})
+        backup_item = {"path": backup, "is_video": False}
+        send_single(
+            backup_item,
+            "Database checkpoint after link %d/%d\\n%s" % (index, total, url),
+            backup_chat,
+        )
         LOG.info("Database backup sent to Telegram chat %s.", backup_chat)
     except Exception:
         LOG.exception("Database backup failed")
