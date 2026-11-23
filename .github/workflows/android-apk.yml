@@ -38,6 +38,17 @@ jobs:
           java -version
           python3.11 --version
 
+      - name: Verify target branch and Android transport
+        run: |
+          test "$GITHUB_REF" = "refs/heads/telethon-https-migration"
+          echo "Building commit: $(git rev-parse HEAD)"
+          grep -q "from telethon import TelegramClient" app/src/main/python/engine.py
+          grep -q "connection=TelegramHttpsConnection" app/src/main/python/engine.py
+          if grep -Eiq "kurigram|pyrogram" app/src/main/python/engine.py app/build.gradle; then
+            echo "Legacy Kurigram/Pyrogram dependency detected; refusing to build."
+            exit 1
+          fi
+
       - name: Build debug APK
         uses: gradle/gradle-build-action@v3
         with:
@@ -47,7 +58,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: instagram-bulk-downloader-debug
+          name: instagram-bulk-downloader-debug-${{ github.sha }}
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
