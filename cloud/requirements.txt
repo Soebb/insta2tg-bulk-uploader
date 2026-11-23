@@ -1,0 +1,5 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+yt-dlp>=2026.1.1
+kurigram==2.2.27
+tgcrypto>=1.2.5
