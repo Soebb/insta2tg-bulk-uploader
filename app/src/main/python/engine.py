@@ -121,7 +121,9 @@ def telegram_request(method, fields=None, files=None):
         connection = None
         sent_bytes = 0
         try:
-            connection = http.client.HTTPSConnection("api.telegram.org", timeout=240)
+            # Use a bounded timeout while transmitting the body, then allow
+            # Telegram much longer to return the API response on slow mobile networks.
+            connection = http.client.HTTPSConnection("api.telegram.org", timeout=180)
             connection.putrequest("POST", "/bot%s/%s" % (token, method))
             connection.putheader("Content-Type", "multipart/form-data; boundary=%s" % boundary)
             connection.putheader("Content-Length", str(content_length))
@@ -146,6 +148,13 @@ def telegram_request(method, fields=None, files=None):
                 send_piece(b"\r\n")
             send_piece(closing)
 
+            if connection.sock is not None:
+                # Uploads can finish while the Bot API/network path is still
+                # processing the media. The old 240s socket timeout caused
+                # false-negative delivery results on slower connections.
+                connection.sock.settimeout(900)
+                LOG.info("Upload body sent (%d bytes); waiting up to 15 minutes for Telegram's response.",
+                         sent_bytes)
             response = connection.getresponse()
             raw = response.read()
             try:
@@ -178,9 +187,9 @@ def telegram_request(method, fields=None, files=None):
             # automatically in that ambiguous case, to avoid duplicate posts.
             if sent_bytes >= total_bytes:
                 raise RuntimeError(
-                    "Telegram connection closed after all %d upload bytes were sent; "
-                    "delivery status is unknown. Check the destination chat before retrying."
-                    % total_bytes
+                    "Telegram did not return a response after all %d upload bytes were sent "
+                    "(%s); delivery status is unknown. Check the destination chat before retrying."
+                    % (total_bytes, type(exc).__name__)
                 ) from exc
             if attempt >= 3:
                 raise RuntimeError(
