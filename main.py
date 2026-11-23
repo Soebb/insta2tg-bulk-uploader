@@ -1,6 +1,5 @@
 import asyncio
 import hashlib
-import json
 import logging
 import os
 import shutil
@@ -8,12 +7,13 @@ import sqlite3
 import time
 from pathlib import Path
 
-import aiohttp
 import yt_dlp
 from dotenv import load_dotenv
-from pyrogram import Client, filters
-from pyrogram.types import InputMediaPhoto, InputMediaVideo
-from pyrogram.errors import FloodWait
+from telethon import TelegramClient, events
+from telethon.errors import FloodWaitError
+from telethon.network import ConnectionHttp
+
+from telegram_https import DC_HOSTS, TelegramHttpsConnection
 
 ROOT = Path(__file__).resolve().parent
 os.chdir(ROOT)
@@ -25,6 +25,7 @@ API_HASH = os.getenv("API_HASH", "").strip()
 TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID", "").strip()
 OWNER_ID = int(os.getenv("OWNER_ID", "0") or 0)
 BACKUP_CHAT_ID = int(os.getenv("BACKUP_CHAT_ID", str(OWNER_ID)) or 0)
+SESSION_NAME = os.getenv("SESSION_NAME", "instagram_bulk_telethon").strip()
 INPUT_FILE = Path(os.getenv("INPUT_FILE", "links.txt"))
 DOWNLOAD_DIR = Path(os.getenv("DOWNLOAD_DIR", "downloads"))
 DATABASE_FILE = Path(os.getenv("DATABASE_FILE", "progress.sqlite3"))
@@ -38,10 +39,28 @@ DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler("downloader.log", encoding="utf-8")],
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("downloader.log", encoding="utf-8"),
+    ],
 )
 log = logging.getLogger("instagram-bulk")
-app = Client("instagram_bulk_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+# This is a Telethon MTProto client authenticated as the bot account.
+# ConnectionHttp uses TLS automatically when its port is 443. The custom
+# connection maps every Telegram DC to its official HTTPS hostname.
+app = TelegramClient(
+    SESSION_NAME,
+    API_ID,
+    API_HASH,
+    connection=TelegramHttpsConnection,
+    request_retries=5,
+    connection_retries=5,
+    retry_delay=2,
+    auto_reconnect=True,
+    flood_sleep_threshold=60,
+)
+
 run_lock = asyncio.Lock()
 pause_event = asyncio.Event()
 pause_event.set()
@@ -63,10 +82,8 @@ def database():
     return conn
 
 
-
-
 async def send_database_backup(conn, index, total, url):
-    """Create a consistent SQLite snapshot and deliver it to the owner's private chat."""
+    """Create a consistent SQLite snapshot and upload it through Telethon/MTProto."""
     if not BACKUP_CHAT_ID:
         log.warning("Database backup not sent: set OWNER_ID or BACKUP_CHAT_ID.")
         return
@@ -79,14 +96,14 @@ async def send_database_backup(conn, index, total, url):
             target.commit()
         finally:
             target.close()
-        await app.send_document(
+        await app.send_file(
             BACKUP_CHAT_ID,
             str(backup_path),
             caption=f"Database checkpoint after link {index}/{total}.\nCompleted item: {url}",
         )
         log.info("Database checkpoint delivered to Telegram private chat %s.", BACKUP_CHAT_ID)
     except Exception:
-        log.exception("Could not send database checkpoint to Telegram.")
+        log.exception("Could not send database checkpoint through Telethon.")
     finally:
         try:
             backup_path.unlink(missing_ok=True)
@@ -94,37 +111,50 @@ async def send_database_backup(conn, index, total, url):
             log.warning("Could not remove temporary database backup %s", backup_path)
 
 
-async def restore_database_from_reply(message):
-    if not message.reply_to_message or not message.reply_to_message.document:
-        await message.reply_text("Reply to a database backup document with /restore.")
+async def restore_database_from_reply(event):
+    reply = await event.get_reply_message()
+    if not reply or not reply.document:
+        await event.reply("Reply to a database backup document with /restore.")
         return
     if run_lock.locked():
-        await message.reply_text("Stop the queue before restoring the database.")
+        await event.reply("Stop the queue before restoring the database.")
         return
+
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
     restore_path = DOWNLOAD_DIR / "restore-candidate.sqlite3"
     try:
-        downloaded = await app.download_media(message.reply_to_message, file_name=str(restore_path))
+        downloaded = await app.download_media(reply, file=str(restore_path))
         if not downloaded:
             raise RuntimeError("Telegram did not return a downloaded file.")
         candidate = Path(downloaded)
         check = sqlite3.connect(str(candidate))
         try:
             integrity = check.execute("PRAGMA integrity_check").fetchone()
-            tables = {row[0] for row in check.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            if not integrity or integrity[0] != "ok" or not {"posts", "chunks"}.issubset(tables):
+            tables = {
+                row[0]
+                for row in check.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            if (
+                not integrity
+                or integrity[0] != "ok"
+                or not {"posts", "chunks"}.issubset(tables)
+            ):
                 raise RuntimeError("The file is not a valid downloader database backup.")
         finally:
             check.close()
+
         for suffix in ("-wal", "-shm"):
             Path(str(DATABASE_FILE) + suffix).unlink(missing_ok=True)
         os.replace(candidate, DATABASE_FILE)
-        await message.reply_text("Database restored successfully. You can now send /start.")
+        await event.reply("Database restored successfully. You can now send /start.")
     except Exception as exc:
         log.exception("Database restore failed.")
-        await message.reply_text(f"Restore failed: {exc}")
+        await event.reply(f"Restore failed: {exc}")
     finally:
         restore_path.unlink(missing_ok=True)
+
 
 def load_links():
     if not INPUT_FILE.exists():
@@ -152,39 +182,61 @@ def flatten(info):
 def is_video(item):
     codec = item.get("vcodec")
     ext = (item.get("ext") or "").lower()
-    return (codec and codec != "none") or ext in {"mp4", "m4v", "mov", "webm", "mkv"}
+    return (codec and codec != "none") or ext in {
+        "mp4", "m4v", "mov", "webm", "mkv"
+    }
 
 
 def best_format(entry):
-    formats = [f for f in entry.get("formats", []) if f.get("url")]
+    formats = [item for item in entry.get("formats", []) if item.get("url")]
     if not formats:
         return entry
-    videos = [f for f in formats if is_video(f)]
+    videos = [item for item in formats if is_video(item)]
     candidates = videos or formats
     if not videos:
-        return max(candidates, key=lambda f: (f.get("width") or 0) * (f.get("height") or 0))
+        return max(
+            candidates,
+            key=lambda item: (item.get("width") or 0) * (item.get("height") or 0),
+        )
     for height in (360, 480, 720):
-        exact = [f for f in candidates if f.get("height") == height]
+        exact = [item for item in candidates if item.get("height") == height]
         if exact:
-            return max(exact, key=lambda f: f.get("tbr") or 0)
+            return max(exact, key=lambda item: item.get("tbr") or 0)
     for limit in (360, 480, 720):
-        lower = [f for f in candidates if (f.get("height") or 0) <= limit]
+        lower = [
+            item for item in candidates
+            if (item.get("height") or 0) <= limit
+        ]
         if lower:
-            return max(lower, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0))
-    return max(candidates, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0))
+            return max(
+                lower,
+                key=lambda item: (item.get("height") or 0, item.get("tbr") or 0),
+            )
+    return max(
+        candidates,
+        key=lambda item: (item.get("height") or 0, item.get("tbr") or 0),
+    )
 
 
 def make_items(info):
     result = []
     for entry in flatten(info):
         fmt = best_format(entry)
-        url = fmt.get("url") or entry.get("url")
-        if not url:
+        media_url = fmt.get("url") or entry.get("url")
+        if not media_url:
             continue
-        media_id = str(entry.get("id") or hashlib.sha1(url.encode()).hexdigest()[:12])
-        size = fmt.get("filesize") or fmt.get("filesize_approx") or entry.get("filesize") or entry.get("filesize_approx")
+        media_id = str(
+            entry.get("id") or hashlib.sha1(media_url.encode()).hexdigest()[:12]
+        )
+        size = (
+            fmt.get("filesize")
+            or fmt.get("filesize_approx")
+            or entry.get("filesize")
+            or entry.get("filesize_approx")
+        )
         result.append({
-            "id": media_id, "url": url,
+            "id": media_id,
+            "url": media_url,
             "is_video": is_video(fmt) or is_video(entry),
             "size": int(size) if size else None,
         })
@@ -197,18 +249,26 @@ def split(items, limit=10):
 
 
 def signature(items):
-    return hashlib.sha256("|".join(x["id"] for x in items).encode()).hexdigest()
+    return hashlib.sha256(
+        "|".join(item["id"] for item in items).encode()
+    ).hexdigest()
 
 
 def chunk_is_sent(conn, url, number, sig):
-    row = conn.execute("SELECT signature,status FROM chunks WHERE url=? AND chunk_no=?", (url, number)).fetchone()
+    row = conn.execute(
+        "SELECT signature,status FROM chunks WHERE url=? AND chunk_no=?",
+        (url, number),
+    ).fetchone()
     return bool(row and row[0] == sig and row[1] == "sent")
 
 
 def set_chunk(conn, url, number, sig):
-    conn.execute("""INSERT INTO chunks(url,chunk_no,signature,status) VALUES(?,?,?,'sent')
-        ON CONFLICT(url,chunk_no) DO UPDATE SET signature=excluded.signature,status='sent',
-        updated_at=CURRENT_TIMESTAMP""", (url, number, sig))
+    conn.execute(
+        """INSERT INTO chunks(url,chunk_no,signature,status) VALUES(?,?,?,'sent')
+        ON CONFLICT(url,chunk_no) DO UPDATE SET signature=excluded.signature,
+        status='sent', updated_at=CURRENT_TIMESTAMP""",
+        (url, number, sig),
+    )
     conn.commit()
 
 
@@ -217,31 +277,21 @@ def caption_for(index, url, description):
 
 
 async def send_direct(items, caption):
-    media = []
-    for i, item in enumerate(items):
-        obj = {"type": "video" if item["is_video"] else "photo", "media": item["url"]}
-        if i == 0 and caption:
-            obj["caption"] = caption
-        media.append(obj)
-    if len(media) == 1:
-        kind = media[0]["type"]
-        method = "sendVideo" if kind == "video" else "sendPhoto"
-        payload = {"chat_id": TARGET_CHAT_ID, kind: media[0]["media"]}
-        if caption:
-            payload["caption"] = caption
-    else:
-        method = "sendMediaGroup"
-        payload = {"chat_id": TARGET_CHAT_ID, "media": json.dumps(media)}
-    timeout = aiohttp.ClientTimeout(total=100, connect=20)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/{method}", json=payload) as response:
-            data = await response.json(content_type=None)
-            if response.status != 200 or not data.get("ok"):
-                wait = (data.get("parameters") or {}).get("retry_after")
-                if wait:
-                    raise FloodWait(int(wait))
-                raise RuntimeError(data.get("description", f"Telegram HTTP {response.status}"))
-            return data.get("result")
+    """Ask Telegram to fetch public media URLs using Telethon's MTProto API."""
+    urls = [item["url"] for item in items]
+    if len(urls) == 1:
+        return await app.send_file(
+            TARGET_CHAT_ID,
+            urls[0],
+            caption=caption,
+            supports_streaming=bool(items[0]["is_video"]),
+        )
+    return await app.send_file(
+        TARGET_CHAT_ID,
+        urls,
+        caption=caption,
+        supports_streaming=True,
+    )
 
 
 async def download_post(url, key):
@@ -249,10 +299,20 @@ async def download_post(url, key):
     folder.mkdir(parents=True, exist_ok=True)
     options = {
         "outtmpl": str(folder / "%(id)s.%(ext)s"),
-        "format": "best[height=360]/best[height=480]/best[height=720]/best[height<=360]/best[height<=480]/best[height<=720]/best",
-        "noplaylist": False, "ignoreerrors": False, "quiet": True, "no_warnings": True,
-        "retries": 8, "fragment_retries": 8, "socket_timeout": 30, "merge_output_format": "mp4",
+        "format": (
+            "best[height=360]/best[height=480]/best[height=720]/"
+            "best[height<=360]/best[height<=480]/best[height<=720]/best"
+        ),
+        "noplaylist": False,
+        "ignoreerrors": False,
+        "quiet": True,
+        "no_warnings": True,
+        "retries": 8,
+        "fragment_retries": 8,
+        "socket_timeout": 30,
+        "merge_output_format": "mp4",
     }
+
     def work():
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -261,17 +321,27 @@ async def download_post(url, key):
             entries = flatten(info)
             files = []
             for entry in entries:
-                paths = [Path(x["filepath"]) for x in entry.get("requested_downloads", []) if x.get("filepath")]
+                paths = [
+                    Path(item["filepath"])
+                    for item in entry.get("requested_downloads", [])
+                    if item.get("filepath")
+                ]
                 if entry.get("filepath"):
                     paths.append(Path(entry["filepath"]))
                 paths.extend(folder.glob(f"{entry.get('id', '')}.*"))
-                found = next((p for p in paths if p.is_file()), None)
+                found = next((path for path in paths if path.is_file()), None)
                 if found and found not in files:
                     files.append(found)
             if len(files) != len(entries):
-                remaining = [p for p in sorted(folder.iterdir()) if p.is_file() and p not in files and not p.name.endswith((".part", ".ytdl"))]
+                remaining = [
+                    path for path in sorted(folder.iterdir())
+                    if path.is_file()
+                    and path not in files
+                    and not path.name.endswith((".part", ".ytdl"))
+                ]
                 files.extend(remaining[:len(entries) - len(files)])
             return files
+
     paths = await asyncio.to_thread(work)
     if not paths:
         raise RuntimeError("No downloaded files found.")
@@ -280,38 +350,63 @@ async def download_post(url, key):
 
 async def send_local(items, paths, caption):
     if len(items) != len(paths):
-        raise RuntimeError(f"Media/file count mismatch: {len(items)} vs {len(paths)}")
+        raise RuntimeError(
+            f"Media/file count mismatch: {len(items)} vs {len(paths)}"
+        )
     if len(paths) == 1:
-        if items[0]["is_video"]:
-            return await app.send_video(TARGET_CHAT_ID, str(paths[0]), caption=caption, supports_streaming=True)
-        return await app.send_photo(TARGET_CHAT_ID, str(paths[0]), caption=caption)
-    group = []
-    for i, (item, path) in enumerate(zip(items, paths)):
-        cap = caption if i == 0 else None
-        if item["is_video"]:
-            group.append(InputMediaVideo(str(path), caption=cap, supports_streaming=True))
-        else:
-            group.append(InputMediaPhoto(str(path), caption=cap))
-    return await app.send_media_group(TARGET_CHAT_ID, group)
+        return await app.send_file(
+            TARGET_CHAT_ID,
+            str(paths[0]),
+            caption=caption,
+            supports_streaming=bool(items[0]["is_video"]),
+        )
+    return await app.send_file(
+        TARGET_CHAT_ID,
+        [str(path) for path in paths],
+        caption=caption,
+        supports_streaming=True,
+    )
 
 
 async def process_one(conn, index, total, url):
     key = hashlib.sha1(url.encode()).hexdigest()[:16]
-    conn.execute("""INSERT INTO posts(url,status,attempts) VALUES(?,'processing',1)
-        ON CONFLICT(url) DO UPDATE SET status='processing',attempts=attempts+1,
-        updated_at=CURRENT_TIMESTAMP""", (url,))
+    conn.execute(
+        """INSERT INTO posts(url,status,attempts) VALUES(?,'processing',1)
+        ON CONFLICT(url) DO UPDATE SET status='processing',
+        attempts=attempts+1, updated_at=CURRENT_TIMESTAMP""",
+        (url,),
+    )
     conn.commit()
     log.info("[%d/%d] %s", index, total, url)
-    opts = {"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": False, "retries": 5}
-    info = await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(opts).extract_info(url, download=False))
+
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "noplaylist": False,
+        "retries": 5,
+    }
+    info = await asyncio.to_thread(
+        lambda: yt_dlp.YoutubeDL(opts).extract_info(url, download=False)
+    )
     if not info:
         raise RuntimeError("Could not extract post.")
+
     entries = flatten(info)
     items = make_items(info)
     if not items:
         raise RuntimeError("No photo/video media found.")
-    caption = caption_for(index, url, info.get("description") or (entries[0].get("description") or ""))
-    work = [(n, part, signature(part)) for n, part in split(items) if not chunk_is_sent(conn, url, n, signature(part))]
+
+    caption = caption_for(
+        index,
+        url,
+        info.get("description") or (entries[0].get("description") or ""),
+    )
+    work = [
+        (number, part, signature(part))
+        for number, part in split(items)
+        if not chunk_is_sent(conn, url, number, signature(part))
+    ]
     if not work:
         conn.execute("UPDATE posts SET status='done' WHERE url=?", (url,))
         conn.commit()
@@ -322,29 +417,35 @@ async def process_one(conn, index, total, url):
         await pause_event.wait()
         chunk_caption = caption if number == 0 else ""
         direct_ok = False
-        if DIRECT_URL_UPLOAD and all(x["url"] and (x["size"] is None or x["size"] <= (20 if x["is_video"] else 5) * 1024 * 1024) for x in part):
+
+        if DIRECT_URL_UPLOAD and all(item.get("url") for item in part):
             try:
                 await send_direct(part, chunk_caption)
                 direct_ok = True
-                log.info("Chunk %d sent via Telegram URL fetch.", number + 1)
-            except FloodWait as exc:
-                log.warning("Telegram FloodWait: %s seconds", exc.value)
-                await asyncio.sleep(exc.value + 1)
+                log.info("Chunk %d sent using Telethon external-media upload.", number + 1)
+            except FloodWaitError:
+                raise
             except Exception as exc:
-                log.warning("Direct URL send failed; local fallback: %s", exc)
+                log.warning("Telethon URL upload failed; using local fallback: %s", exc)
+
         if not direct_ok:
             if local_files is None:
                 local_files = await download_post(url, key)
-            # The extractor returns carousel entries in their original order.
             start = number * 10
             selected = local_files[start:start + len(part)]
             await send_local(part, selected, chunk_caption)
-            log.info("Chunk %d uploaded from local files.", number + 1)
+            log.info("Chunk %d uploaded from local files through Telethon.", number + 1)
+
         set_chunk(conn, url, number, sig)
         await asyncio.sleep(REQUEST_DELAY)
 
-    conn.execute("UPDATE posts SET status='done',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE url=?", (url,))
+    conn.execute(
+        """UPDATE posts SET status='done',last_error=NULL,
+        updated_at=CURRENT_TIMESTAMP WHERE url=?""",
+        (url,),
+    )
     conn.commit()
+
     if local_files:
         for path in local_files:
             try:
@@ -357,101 +458,152 @@ async def process_one(conn, index, total, url):
             pass
 
 
-def allowed(message):
-    return OWNER_ID == 0 or (message.from_user and message.from_user.id == OWNER_ID)
+def allowed(event):
+    return OWNER_ID == 0 or event.sender_id == OWNER_ID
 
 
-async def run_queue(message):
+async def run_queue(event):
     global stop_requested
     if run_lock.locked():
-        await message.reply_text("The queue is already running.")
+        await event.reply("The queue is already running.")
         return
+
     async with run_lock:
         stop_requested = False
         conn = database()
         try:
             links = load_links()
-            await message.reply_text(f"Started. {len(links)} unique links loaded.")
+            await event.reply(f"Started. {len(links)} unique links loaded.")
             for index, url in enumerate(links, 1):
                 if stop_requested:
                     break
                 await pause_event.wait()
-                row = conn.execute("SELECT status FROM posts WHERE url=?", (url,)).fetchone()
+                row = conn.execute(
+                    "SELECT status FROM posts WHERE url=?", (url,)
+                ).fetchone()
                 if row and row[0] == "done":
                     continue
+
                 try:
                     await process_one(conn, index, len(links), url)
-                except FloodWait as exc:
-                    log.warning("FloodWait: wait %s seconds, then retry once.", exc.value)
-                    await asyncio.sleep(exc.value + 1)
+                except FloodWaitError as exc:
+                    log.warning(
+                        "Telegram FloodWait: wait %s seconds, then retry once.",
+                        exc.seconds,
+                    )
+                    await asyncio.sleep(exc.seconds + 1)
                     try:
                         await process_one(conn, index, len(links), url)
                     except Exception as retry_exc:
                         log.exception("Retry failed for %s", url)
-                        conn.execute("UPDATE posts SET status='failed',last_error=? WHERE url=?", (str(retry_exc)[:1000], url))
+                        conn.execute(
+                            "UPDATE posts SET status='failed',last_error=? WHERE url=?",
+                            (str(retry_exc)[:1000], url),
+                        )
                         conn.commit()
                 except Exception as exc:
                     log.exception("Post failed: %s", url)
-                    conn.execute("UPDATE posts SET status='failed',last_error=? WHERE url=?", (str(exc)[:1000], url))
+                    conn.execute(
+                        "UPDATE posts SET status='failed',last_error=? WHERE url=?",
+                        (str(exc)[:1000], url),
+                    )
                     conn.commit()
-                shutil.rmtree(DOWNLOAD_DIR / hashlib.sha1(url.encode()).hexdigest()[:16], ignore_errors=True)
+
+                shutil.rmtree(
+                    DOWNLOAD_DIR / hashlib.sha1(url.encode()).hexdigest()[:16],
+                    ignore_errors=True,
+                )
                 await send_database_backup(conn, index, len(links), url)
                 if index % 25 == 0:
-                    await message.reply_text(f"Progress: {index}/{len(links)} links scanned.")
-            done = conn.execute("SELECT COUNT(*) FROM posts WHERE status='done'").fetchone()[0]
-            failed = conn.execute("SELECT COUNT(*) FROM posts WHERE status='failed'").fetchone()[0]
-            await message.reply_text(f"Queue finished/stopped.\nCompleted: {done}\nFailed: {failed}")
+                    await event.reply(
+                        f"Progress: {index}/{len(links)} links scanned."
+                    )
+
+            done = conn.execute(
+                "SELECT COUNT(*) FROM posts WHERE status='done'"
+            ).fetchone()[0]
+            failed = conn.execute(
+                "SELECT COUNT(*) FROM posts WHERE status='failed'"
+            ).fetchone()[0]
+            await event.reply(
+                f"Queue finished/stopped.\nCompleted: {done}\nFailed: {failed}"
+            )
         finally:
             conn.close()
 
 
-@app.on_message(filters.command("start"))
-async def start_handler(client, message):
-    if allowed(message):
-        await run_queue(message)
+@app.on(events.NewMessage(pattern=r"^/start(?:@\w+)?$"))
+async def start_handler(event):
+    if allowed(event):
+        await run_queue(event)
 
 
-@app.on_message(filters.command("restore") & filters.private)
-async def restore_handler(client, message):
-    if not allowed(message) or not message.from_user or message.from_user.id != BACKUP_CHAT_ID:
-        return
-    await restore_database_from_reply(message)
+@app.on(events.NewMessage(pattern=r"^/restore(?:@\w+)?$"))
+async def restore_handler(event):
+    if allowed(event) and event.is_private:
+        await restore_database_from_reply(event)
 
 
-@app.on_message(filters.command("status"))
-async def status_handler(client, message):
-    if not allowed(message):
+@app.on(events.NewMessage(pattern=r"^/status(?:@\w+)?$"))
+async def status_handler(event):
+    if not allowed(event):
         return
     conn = database()
-    counts = {name: conn.execute("SELECT COUNT(*) FROM posts WHERE status=?", (name,)).fetchone()[0]
-              for name in ("done", "failed", "processing", "pending")}
+    counts = {
+        name: conn.execute(
+            "SELECT COUNT(*) FROM posts WHERE status=?", (name,)
+        ).fetchone()[0]
+        for name in ("done", "failed", "processing", "pending")
+    }
     conn.close()
-    await message.reply_text("\n".join(f"{k}: {v}" for k, v in counts.items()))
+    await event.reply("\n".join(f"{key}: {value}" for key, value in counts.items()))
 
 
-@app.on_message(filters.command("pause"))
-async def pause_handler(client, message):
-    if allowed(message):
+@app.on(events.NewMessage(pattern=r"^/pause(?:@\w+)?$"))
+async def pause_handler(event):
+    if allowed(event):
         pause_event.clear()
-        await message.reply_text("Paused after the current transfer.")
+        await event.reply("Paused after the current transfer.")
 
 
-@app.on_message(filters.command("resume"))
-async def resume_handler(client, message):
-    if allowed(message):
+@app.on(events.NewMessage(pattern=r"^/resume(?:@\w+)?$"))
+async def resume_handler(event):
+    if allowed(event):
         pause_event.set()
-        await message.reply_text("Resumed.")
+        await event.reply("Resumed.")
 
 
-@app.on_message(filters.command("stop"))
-async def stop_handler(client, message):
+@app.on(events.NewMessage(pattern=r"^/stop(?:@\w+)?$"))
+async def stop_handler(event):
     global stop_requested
-    if allowed(message):
+    if allowed(event):
         stop_requested = True
         pause_event.set()
-        await message.reply_text("Stop requested; the current post will finish first.")
+        await event.reply("Stop requested; the current post will finish first.")
+
+
+async def main():
+    # Always start from an official HTTPS hostname. ConnectionHttp enables TLS
+    # because the selected port is 443; TelegramHttpsConnection also enforces
+    # the hostname mapping when Telegram changes the data center.
+    dc_id = app.session.dc_id if app.session.dc_id in DC_HOSTS else 2
+    app.session.set_dc(dc_id, DC_HOSTS[dc_id], 443)
+    app.session.save()
+
+    log.info("Starting Telegram bot through Telethon MTProto over HTTPS.")
+    await app.start(bot_token=BOT_TOKEN)
+    me = await app.get_me()
+    log.info(
+        "Authenticated as @%s (id=%s). HTTPS transport is enabled for Telegram DCs 1-5.",
+        me.username or "bot",
+        me.id,
+    )
+    log.info("Bot ready. Send /start to process links.txt; /status to inspect progress.")
+    try:
+        await app.run_until_disconnected()
+    finally:
+        await app.disconnect()
 
 
 if __name__ == "__main__":
-    log.info("Bot ready. Send /start to process links.txt; /status to inspect progress.")
-    app.run()
+    asyncio.run(main())
