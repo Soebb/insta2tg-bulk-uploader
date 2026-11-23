@@ -1,4 +1,5 @@
 """Standalone yt-dlp engine; intentionally independent of Telegram/Telethon."""
+import hashlib
 from pathlib import Path
 
 import yt_dlp
@@ -61,7 +62,7 @@ def make_items(info):
         media_url = fmt.get("url") or entry.get("url")
         if not media_url:
             continue
-        media_id = str(entry.get("id") or "unknown")
+        media_id = str(entry.get("id") or hashlib.sha1(media_url.encode()).hexdigest()[:12])
         size = (
             fmt.get("filesize")
             or fmt.get("filesize_approx")
