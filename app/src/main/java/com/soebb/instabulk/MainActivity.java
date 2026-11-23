@@ -96,9 +96,9 @@ public class MainActivity extends Activity {
         botToken = field(root, "BOT_TOKEN", true);
         apiId = field(root, "API_ID", false);
         apiHash = field(root, "API_HASH", true);
-        targetChat = field(root, "TARGET_CHAT_ID", false);
-        ownerId = field(root, "OWNER_ID (optional)", false);
-        backupChat = field(root, "BACKUP_CHAT_ID (optional)", false);
+        targetChat = field(root, "TARGET_CHAT_ID (ex: @my_chnl)", false);
+        ownerId = field(root, "OWNER_ID [optional]", false);
+        backupChat = field(root, "BACKUP_CHAT_ID [optional]", false);
 
         Button choose = button("Choose links.txt");
         root.addView(choose);
