@@ -455,6 +455,7 @@ public class MainActivity extends Activity {
             validateDatabase(incoming);
             copyFile(incoming, staged);
             validateDatabase(staged);
+            checkpointExistingDatabase();
             if (databaseFile.exists()) copyFile(databaseFile, previous);
             new File(getFilesDir(), "progress.sqlite3-wal").delete();
             new File(getFilesDir(), "progress.sqlite3-shm").delete();
@@ -472,6 +473,20 @@ public class MainActivity extends Activity {
         } finally {
             incoming.delete();
             staged.delete();
+        }
+    }
+
+    private void checkpointExistingDatabase() {
+        if (!databaseFile.exists()) return;
+        SQLiteDatabase db = SQLiteDatabase.openDatabase(databaseFile.getAbsolutePath(), null, SQLiteDatabase.OPEN_READWRITE);
+        try {
+            Cursor checkpoint = db.rawQuery("PRAGMA wal_checkpoint(FULL)", null);
+            checkpoint.moveToFirst();
+            boolean busy = checkpoint.getInt(0) != 0;
+            checkpoint.close();
+            if (busy) throw new IllegalStateException("Current database is busy; stop the downloader and retry");
+        } finally {
+            db.close();
         }
     }
 
