@@ -221,7 +221,7 @@ def send_album(files, caption, chat_id):
     return telegram_request("sendMediaGroup", {"chat_id": chat_id, "media": json.dumps(media)}, uploads)
 
 
-def send_single(item, caption, chat_id):
+def send_single(item, caption, chat_id, force_document=False):
     method = "sendVideo" if item["is_video"] else "sendPhoto"
     key = "video" if item["is_video"] else "photo"
     fields = {"chat_id": chat_id}
@@ -395,7 +395,7 @@ def run_queue():
                              index, len(links), chunk_no + 1, len(chunks), len(chunk),
                              upload_bytes / (1024.0 * 1024.0))
                     if len(chunk) == 1:
-                        send_single(chunk[0], caption if chunk_no == 0 else "", CONFIG["TARGET_CHAT_ID"])
+                        send_single(chunk[0], caption if chunk_no == 0 else "", CONFIG["TARGET_CHAT_ID"], force_document=True)
                     else:
                         send_album(chunk, caption if chunk_no == 0 else "", CONFIG["TARGET_CHAT_ID"])
                     db.execute("""INSERT INTO chunks(url,chunk_no,signature,status) VALUES(?,?,?,'sent')
