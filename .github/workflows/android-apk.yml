@@ -1,4 +1,5 @@
 name: Android Debug APK
+# Includes the Kurigram MTProto upload fallback branch.
 
 on:
   push:
