@@ -97,15 +97,16 @@ jobs:
           env_path = Path("target/android-env.sh")
           env_text = env_path.read_text()
           marker = "export CXXFLAGS=$CFLAGS"
-          addition = """export PYO3_CROSS_LIB_DIR="$RUNNER_TEMP/chaquopy-python-libs"
-          mkdir -p "$PYO3_CROSS_LIB_DIR"
-          ln -sf "$PREFIX/lib/libpython3.so" "$PYO3_CROSS_LIB_DIR/libpython3.so"
-          test -f "$PYO3_CROSS_LIB_DIR/libpython3.so"
+          addition = """# Chaquopy ships the stable-ABI library as libpython3.so.
+          # PyO3 0.29 may request the versioned libpython3.11 linker name.
+          ln -sf libpython3.so "$PREFIX/lib/libpython3.11.so"
+          test -f "$PREFIX/lib/libpython3.so"
+          test -f "$PREFIX/lib/libpython3.11.so"
           """
           if marker not in env_text:
               raise SystemExit("Could not locate android-env.sh insertion point")
           env_path.write_text(env_text.replace(marker, marker + "\n\n" + addition, 1))
-          print("Configured external PyO3 libpython search path.")
+          print("Added Chaquopy stable-ABI libpython linker alias without enabling PyO3 sysconfig discovery.")
           PY
 
       - name: Build WarpCrypto wheel
