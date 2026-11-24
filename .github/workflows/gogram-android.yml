@@ -78,6 +78,13 @@ jobs:
           path: app/libs/gogram.aar
           if-no-files-found: error
 
+      # Chaquopy needs a matching host Python interpreter to build Python
+      # requirements. The runner's preinstalled Python may not include 3.11.
+      - name: Set up Python for Chaquopy
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Install Android build platform
         run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
 
