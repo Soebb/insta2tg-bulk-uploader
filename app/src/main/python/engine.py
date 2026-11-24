@@ -236,6 +236,7 @@ def send_telethon(item, caption, chat_id, force_document=False):
     async def upload():
         # This is the regular Telethon client. It owns the authenticated session
         # and is used for all normal Telegram operations and the final send_file.
+        LOG.info("MTProto stage 1/9: creating the regular Telethon client.")
         client = TelegramClient(
             session_path,
             int(api_id),
@@ -248,6 +249,7 @@ def send_telethon(item, caption, chat_id, force_document=False):
             timeout=30,
             raise_last_call_error=True,
         )
+        LOG.info("MTProto stage 2/9: regular Telethon client created.")
         upload_client = None
         try:
             # Authenticate the regular client through Telegram's normal MTProto
@@ -255,9 +257,13 @@ def send_telethon(item, caption, chat_id, force_document=False):
             # The custom HTTPS hostname is selected only by TelegramHttpsConnection
             # on the separate upload_client below.
             dc_id = 2
+            LOG.info("MTProto stage 3/9: configuring the regular Telegram DC session.")
             client.session.set_dc(dc_id, "149.154.167.51", 443)
             client.session.save()
+            LOG.info("MTProto stage 4/9: starting/authenticating the regular Telethon client.")
             await client.start(bot_token=CONFIG["BOT_TOKEN"])
+            LOG.info("MTProto stage 4/9 complete: regular client authenticated (authorized=%s).",
+                     await client.is_user_authorized())
 
             # Reuse the exact same authorized session/auth key, but give the
             # upload-only client its own connection implementation. Telegram
@@ -265,7 +271,9 @@ def send_telethon(item, caption, chat_id, force_document=False):
             # regular client can submit that InputFile after this client closes.
             # Use a separate in-memory session object containing the same
             # auth key. This avoids two clients sharing/closing one SQLite session.
+            LOG.info("MTProto stage 5/9: copying the authorized session into an isolated in-memory session.")
             upload_session = StringSession(StringSession.save(client.session))
+            LOG.info("MTProto stage 5/9 complete: isolated session created.")
             upload_client = TelegramClient(
                 upload_session,
                 int(api_id),
@@ -279,7 +287,11 @@ def send_telethon(item, caption, chat_id, force_document=False):
                 timeout=30,
                 raise_last_call_error=True,
             )
+            LOG.info("MTProto stage 6/9: HTTPS upload client constructed; connecting to Telegram HTTPS DC.")
             await upload_client.connect()
+            LOG.info("MTProto stage 6/9 complete: HTTPS upload client connected (connected=%s).",
+                     upload_client.is_connected())
+            LOG.info("MTProto stage 7/9: checking inherited Telegram authorization.")
             if not await upload_client.is_user_authorized():
                 raise RuntimeError(
                     "Upload-only HTTPS client did not inherit the regular Telethon authorization."
@@ -294,12 +306,14 @@ def send_telethon(item, caption, chat_id, force_document=False):
                     LOG.info("Telethon HTTPS upload: %d%% (%.1f/%.1f MB).",
                              percent, current / 1048576.0, total / 1048576.0)
 
+            LOG.info("MTProto stage 7/9 complete: HTTPS client authorization verified.")
             part_size_kb = 512
             part_count = (size + part_size_kb * 1024 - 1) // (part_size_kb * 1024)
             LOG.info(
-                "Starting upload-only HTTPS transport with %d KiB chunks (%d parts).",
+                "MTProto stage 8/9: starting HTTPS upload with %d KiB chunks (%d parts; %.1f MB).",
                 part_size_kb,
                 part_count,
+                size / 1048576.0,
             )
             uploaded_file = await upload_client.upload_file(
                 str(item["path"]),
@@ -308,12 +322,14 @@ def send_telethon(item, caption, chat_id, force_document=False):
                 part_size_kb=part_size_kb,
                 progress_callback=progress,
             )
-            LOG.info("HTTPS file upload finished; switching back to normal Telethon connection.")
+            LOG.info("MTProto stage 8/9 complete: HTTPS file upload finished; closing upload-only client.")
             await upload_client.disconnect()
             upload_client = None
+            LOG.info("MTProto upload-only client disconnected.")
 
             # Sending the Telegram message is deliberately outside the custom
             # HTTP transport. The regular client shares the same auth key.
+            LOG.info("MTProto stage 9/9: sending the uploaded file through the regular Telethon connection.")
             await client.send_file(
                 chat_id,
                 uploaded_file,
@@ -321,11 +337,14 @@ def send_telethon(item, caption, chat_id, force_document=False):
                 force_document=bool(force_document or not item["is_video"]),
                 supports_streaming=bool(item["is_video"] and not force_document),
             )
-            LOG.info("File message sent successfully over the normal Telethon connection.")
+            LOG.info("MTProto stage 9/9 complete: file message sent over the regular Telethon connection.")
         finally:
             if upload_client is not None:
+                LOG.info("Cleaning up: disconnecting the HTTPS upload client.")
                 await upload_client.disconnect()
+            LOG.info("Cleaning up: disconnecting the regular Telethon client.")
             await client.disconnect()
+            LOG.info("MTProto clients disconnected.")
 
     LOG.info(
         "File exceeds the Bot API upload threshold; using HTTPS only for the MTProto file upload (%.1f MB).",
