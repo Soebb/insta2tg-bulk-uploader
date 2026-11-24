@@ -1,0 +1,67 @@
+name: Wzgram Rust JNI Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - wzgram-rust-jni
+    paths:
+      - "mobile/warpcrypto-jni/**"
+      - "app/src/main/jniLibs/**"
+      - "app/src/main/java/com/soebb/instabulk/crypto/**"
+      - "app/src/main/python/warpcrypto.py"
+      - "app/build.gradle"
+      - ".github/workflows/wzgram-rust-jni-apk.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Python for Chaquopy
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Android SDK and NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: |
+          sdkmanager "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Build WarpCrypto for Android ABIs
+        run: |
+          cargo ndk -t arm64-v8a -t armeabi-v7a \
+            -o app/src/main/jniLibs \
+            build --manifest-path mobile/warpcrypto-jni/Cargo.toml --release
+
+      - name: Build debug APK
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon assembleDebug
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: wzgram-rust-jni-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
