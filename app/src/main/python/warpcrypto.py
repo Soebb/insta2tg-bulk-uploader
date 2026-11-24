@@ -27,7 +27,10 @@ def _ctr(data, key, iv, state):
     if len(key) != 32 or len(iv) != 16 or len(state) != 1:
         raise ValueError("Invalid key, IV, or state length")
     result = _Native.nativeCtr(data, key, iv, state)
-    return bytes(result)
+    encrypted = bytes(result[0])
+    iv[:] = bytes(result[1])
+    state[:] = bytes(result[2])
+    return encrypted
 
 
 def ctr256_encrypt(data: bytes, key: bytes, iv: bytearray, state: bytearray) -> bytes:
