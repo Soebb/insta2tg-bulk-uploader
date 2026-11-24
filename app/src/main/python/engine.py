@@ -115,7 +115,7 @@ async def send_single(client, item, caption, chat_id, force_document=False):
         return await client.send_video(
             video=str(path), supports_streaming=True, **common
         )
-    if not force_document and item.get("is_photo"):
+    if not force_document:
         return await client.send_photo(photo=str(path), **common)
     return await client.send_document(document=str(path), **common)
 
