@@ -9,9 +9,11 @@ The Android app runs yt-dlp through Chaquopy and stores its working files in app
 - `TARGET_CHAT_ID`: destination channel username or numeric ID.
 - `OWNER_ID` and `BACKUP_CHAT_ID`: optional owner and database-backup destinations.
 
-## Important Android build dependency
+## Android WarpCrypto integration
 
-Wzgram depends on WarpCrypto, a Rust/PyO3 native extension. The published WarpCrypto wheels currently list desktop platforms (Windows, macOS and manylinux), not Android. Chaquopy requires Android-compatible wheels for native extensions, so changing the Python engine to Wzgram is not by itself enough to produce a working Android APK. This branch updates the Android dependency declaration to Wzgram, but a matching Android WarpCrypto wheel must be built and bundled before the Chaquopy APK build can succeed. Do not treat an APK from an earlier Kurigram build as the Wzgram version.
+Wzgram requires WarpCrypto, a Rust/PyO3 native extension. The Android-compatible wheel is built separately for CPython 3.11 / Android API 24+ / arm64-v8a. The `build-wzgram-android.yml` workflow downloads that wheel from the successful wheel-build run into `app/wheels` before Chaquopy installs Wzgram and its dependencies.
+
+The APK is currently arm64-v8a only because the bundled WarpCrypto wheel targets ARM64. It is suitable for 64-bit ARM Android devices such as the Samsung Galaxy A32 variant used for device testing. The APK must be built by the Wzgram Android workflow; an older Kurigram APK does not contain this integration.
 
 References:
 - [Wzgram installation and dependencies](https://wzgram.com/)
