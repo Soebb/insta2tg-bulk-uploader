@@ -121,14 +121,14 @@ pub extern "system" fn Java_com_soebb_instabulk_crypto_WarpCrypto_nativePackMess
 #[no_mangle]
 pub extern "system" fn Java_com_soebb_instabulk_crypto_WarpCrypto_nativeUnpackMessage(
     mut env: JNIEnv<'_>, _class: JClass<'_>, packed: JByteArray<'_>, session_id: JByteArray<'_>,
-    auth_key: JByteArray<'_>, auth_key_id: JByteArray<'_>,
+    auth_key: JByteArray<'_>, auth_key_id: JByteArray<'_>, incoming: jni::sys::jboolean,
 ) -> jbyteArray {
     let result = (|| {
         let packed = read_bytes(&mut env, &packed)?;
         let session_id = fixed::<8>(read_bytes(&mut env, &session_id)?, "session_id")?;
         let auth_key = fixed::<256>(read_bytes(&mut env, &auth_key)?, "auth_key")?;
         let auth_key_id = fixed::<8>(read_bytes(&mut env, &auth_key_id)?, "auth_key_id")?;
-        let message = warpcrypto::unpack_message(&packed, &auth_key, &auth_key_id, &session_id, true)
+        let message = warpcrypto::unpack_message(&packed, &auth_key, &auth_key_id, &session_id, incoming != 0)
             .map_err(|e| e.to_string())?;
         let mut encoded = Vec::with_capacity(16 + message.body.len());
         encoded.extend_from_slice(&message.msg_id.to_le_bytes());
