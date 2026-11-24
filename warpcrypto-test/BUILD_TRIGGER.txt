@@ -1,0 +1,1 @@
+Trigger Android test APK build after updating the SDK setup step.
