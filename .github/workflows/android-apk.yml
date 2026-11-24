@@ -45,6 +45,8 @@ jobs:
           echo "Building commit: $(git rev-parse HEAD)"
           grep -q "from telethon import TelegramClient" app/src/main/python/engine.py
           grep -q "connection=TelegramHttpsConnection" app/src/main/python/engine.py
+          grep -q "part_size_kb = 512" app/src/main/python/engine.py
+          grep -q "TELETHON_VIDEO_THRESHOLD = BOT_API_UPLOAD_LIMIT" app/src/main/python/engine.py
           if grep -Eiq "kurigram|pyrogram" app/src/main/python/engine.py app/build.gradle; then
             echo "Legacy Kurigram/Pyrogram dependency detected; refusing to build."
             exit 1
