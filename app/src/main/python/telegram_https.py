@@ -38,12 +38,12 @@ class TelegramHttpPacketCodec(HttpPacketCodec):
         packet = super().encode_packet(data)
         # Log only the clear-text HTTP headers. The MTProto payload is encrypted
         # and must never be written to the application log.
-        header_block = packet.split(b"\\r\\n\\r\\n", 1)[0]
+        header_block = packet.split(b"\r\n\r\n", 1)[0]
         LOG.info(
             "HTTPS codec request #%d: encoded HTTP headers (%d bytes): %s",
             request_id,
             len(header_block),
-            header_block.decode("ascii", "replace").replace("\\r\\n", " | "),
+            header_block.decode("ascii", "replace").replace("\r\n", " | "),
         )
         LOG.info(
             "HTTPS codec request #%d: encrypted MTProto body size=%d bytes.",
@@ -61,7 +61,7 @@ class TelegramHttpPacketCodec(HttpPacketCodec):
                 "HTTPS codec request #%d: received status line (%d bytes): %r",
                 request_id, len(status_line), status_line[:512],
             )
-            if not status_line.endswith(b"\\n"):
+            if not status_line.endswith(b"\n"):
                 raise asyncio.IncompleteReadError(status_line, None)
 
             try:
@@ -79,10 +79,10 @@ class TelegramHttpPacketCodec(HttpPacketCodec):
             header_count = 0
             while True:
                 line = await reader.readline()
-                if not line.endswith(b"\\n"):
+                if not line.endswith(b"\n"):
                     raise asyncio.IncompleteReadError(line, None)
 
-                if line in (b"\\r\\n", b"\\n"):
+                if line in (b"\r\n", b"\n"):
                     break
 
                 try:
