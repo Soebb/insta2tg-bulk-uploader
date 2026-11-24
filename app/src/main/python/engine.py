@@ -75,6 +75,14 @@ def verify_crypto_backend():
     if _warpcrypto.ige256_decrypt(encrypted, key, iv) != plain:
         raise RuntimeError("WarpCrypto JNI AES-IGE self-test failed")
 
+    ctr_iv = bytearray(range(16))
+    ctr_state = bytearray(1)
+    ctr_ciphertext = _warpcrypto.ctr256_encrypt(b"android-ctr-test", key, ctr_iv, ctr_state)
+    ctr_iv_dec = bytearray(range(16))
+    ctr_state_dec = bytearray(1)
+    if _warpcrypto.ctr256_decrypt(ctr_ciphertext, key, ctr_iv_dec, ctr_state_dec) != b"android-ctr-test":
+        raise RuntimeError("WarpCrypto JNI AES-CTR self-test failed")
+
     auth_key = bytes(range(256))
     auth_key_id = b"12345678"
     session_id = b"abcdefgh"
