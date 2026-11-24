@@ -112,15 +112,26 @@ def db_open():
 
 
 def upload_progress(label):
-    last = [-5]
+    last_percent = [-5]
+    last_bytes = [0]
+    last_time = [time.monotonic()]
+
     async def progress(current, total):
         if not total:
             return
+        now = time.monotonic()
         percent = int(current * 100 / total)
-        if percent >= last[0] + 5 or current >= total:
-            last[0] = percent
-            LOG.info("Wzgram MTProto upload %s: %d%% (%.1f/%.1f MB).",
-                     label, percent, current / 1048576.0, total / 1048576.0)
+        elapsed = max(now - last_time[0], 0.001)
+        speed_mib = max(0, current - last_bytes[0]) / elapsed / 1048576.0
+        if percent >= last_percent[0] + 2 or current >= total:
+            last_percent[0] = percent
+            LOG.info(
+                "Wzgram MTProto upload %s: %d%% (%.1f/%.1f MB), %.2f MiB/s.",
+                label, percent, current / 1048576.0, total / 1048576.0, speed_mib
+            )
+            last_bytes[0] = current
+            last_time[0] = now
+
     return progress
 
 
@@ -401,6 +412,17 @@ def start(files_dir, settings_json):
         else:
             PAUSED.set()
         async def run_with_wzgram():
+            # Wzgram already uploads in 512 KiB MTProto parts using concurrent
+            # media-session workers. These bot-specific knobs are an experiment:
+            # increase the media-session pool moderately without changing the
+            # main queue's one-file-at-a-time behavior.
+            os.environ.setdefault("WZGRAM_UPLOAD_POOL_BOT", "12")
+            os.environ.setdefault("WZGRAM_UPLOAD_RATE_BOT", "48")
+            LOG.info(
+                "Wzgram upload tuning: bot pool=%s, part rate=%s parts/s.",
+                os.environ["WZGRAM_UPLOAD_POOL_BOT"],
+                os.environ["WZGRAM_UPLOAD_RATE_BOT"],
+            )
             session_dir = ROOT / "wzgram"
             session_dir.mkdir(parents=True, exist_ok=True)
             async with Client(
