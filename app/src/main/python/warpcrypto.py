@@ -95,10 +95,10 @@ def pack_message(msg_id: int, seq_no: int, body: bytes, salt: int,
     ))
 
 
-def unpack_message(packed: bytes, session_id: bytes, auth_key: bytes, auth_key_id: bytes):
+def unpack_message(packed: bytes, session_id: bytes, auth_key: bytes, auth_key_id: bytes, incoming: bool = True):
     if len(session_id) != 8 or len(auth_key) != 256 or len(auth_key_id) != 8:
         raise ValueError("Invalid session or authentication key length")
-    encoded = bytes(_Native.nativeUnpackMessage(packed, session_id, auth_key, auth_key_id))
+    encoded = bytes(_Native.nativeUnpackMessage(packed, session_id, auth_key, auth_key_id, incoming))
     if len(encoded) < 16:
         raise ValueError("Invalid native unpack result")
     msg_id, seq_no, length = struct.unpack_from("<qiI", encoded, 0)
