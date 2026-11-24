@@ -105,5 +105,6 @@ def unpack_message(packed: bytes, session_id: bytes, auth_key: bytes, auth_key_i
     body = encoded[16:16 + length]
     if len(body) != length:
         raise ValueError("Invalid native unpack body length")
-    total_len = len(packed) - 8
+    # Match WarpCrypto's Python API: length of the decrypted data after its 16-byte prefix.
+    total_len = len(packed) - 40
     return msg_id, seq_no, length, body, total_len
