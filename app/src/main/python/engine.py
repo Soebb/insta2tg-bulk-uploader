@@ -218,7 +218,7 @@ MTProto_BOT_UPLOAD_LIMIT = 2_000_000_000
 
 
 def send_telethon(item, caption, chat_id, force_document=False):
-    """Upload a local file over Telethon MTProto using Telegram's HTTPS transport."""
+    """Upload large files over HTTPS, then send them over Telethon's normal connection."""
     size = item["path"].stat().st_size
     if size > MTProto_BOT_UPLOAD_LIMIT:
         raise RuntimeError("This file is larger than the supported 2 GB MTProto bot upload limit.")
@@ -229,14 +229,16 @@ def send_telethon(item, caption, chat_id, force_document=False):
 
     session_dir = ROOT / "telethon"
     session_dir.mkdir(parents=True, exist_ok=True)
+    session_path = str(session_dir / "instagram_bulk_bot")
     last_progress = [-5]
 
     async def upload():
+        # This is the regular Telethon client. It owns the authenticated session
+        # and is used for all normal Telegram operations and the final send_file.
         client = TelegramClient(
-            str(session_dir / "instagram_bulk_bot"),
+            session_path,
             int(api_id),
             api_hash,
-            connection=TelegramHttpsConnection,
             request_retries=5,
             connection_retries=5,
             retry_delay=2,
@@ -245,11 +247,35 @@ def send_telethon(item, caption, chat_id, force_document=False):
             timeout=30,
             raise_last_call_error=True,
         )
-        dc_id = client.session.dc_id if client.session.dc_id in DC_HOSTS else 2
-        client.session.set_dc(dc_id, DC_HOSTS[dc_id], 443)
-        client.session.save()
+        upload_client = None
         try:
+            dc_id = client.session.dc_id if client.session.dc_id in DC_HOSTS else 2
+            client.session.set_dc(dc_id, DC_HOSTS[dc_id], 443)
+            client.session.save()
             await client.start(bot_token=CONFIG["BOT_TOKEN"])
+
+            # Reuse the exact same authorized session/auth key, but give the
+            # upload-only client its own connection implementation. Telegram
+            # associates the uploaded InputFile with this auth key, so the
+            # regular client can submit that InputFile after this client closes.
+            upload_client = TelegramClient(
+                client.session,
+                int(api_id),
+                api_hash,
+                connection=TelegramHttpsConnection,
+                request_retries=5,
+                connection_retries=5,
+                retry_delay=2,
+                auto_reconnect=True,
+                flood_sleep_threshold=60,
+                timeout=30,
+                raise_last_call_error=True,
+            )
+            await upload_client.connect()
+            if not await upload_client.is_user_authorized():
+                raise RuntimeError(
+                    "Upload-only HTTPS client did not inherit the regular Telethon authorization."
+                )
 
             def progress(current, total):
                 if not total:
@@ -260,24 +286,26 @@ def send_telethon(item, caption, chat_id, force_document=False):
                     LOG.info("Telethon HTTPS upload: %d%% (%.1f/%.1f MB).",
                              percent, current / 1048576.0, total / 1048576.0)
 
-            # Telethon's automatic chunk size is conservative for medium files.
-            # HTTPS transport has one HTTP request/response per MTProto packet, so
-            # explicitly use the maximum supported 512 KiB part size to reduce
-            # request count and HTTP framing overhead on large uploads.
             part_size_kb = 512
             part_count = (size + part_size_kb * 1024 - 1) // (part_size_kb * 1024)
             LOG.info(
-                "Starting HTTPS upload with %d KiB chunks (%d parts).",
+                "Starting upload-only HTTPS transport with %d KiB chunks (%d parts).",
                 part_size_kb,
                 part_count,
             )
-            uploaded_file = await client.upload_file(
+            uploaded_file = await upload_client.upload_file(
                 str(item["path"]),
                 file_size=size,
                 file_name=item["path"].name,
                 part_size_kb=part_size_kb,
                 progress_callback=progress,
             )
+            LOG.info("HTTPS file upload finished; switching back to normal Telethon connection.")
+            await upload_client.disconnect()
+            upload_client = None
+
+            # Sending the Telegram message is deliberately outside the custom
+            # HTTP transport. The regular client shares the same auth key.
             await client.send_file(
                 chat_id,
                 uploaded_file,
@@ -285,16 +313,20 @@ def send_telethon(item, caption, chat_id, force_document=False):
                 force_document=bool(force_document or not item["is_video"]),
                 supports_streaming=bool(item["is_video"] and not force_document),
             )
-            LOG.info("HTTPS upload completed and Telegram message was sent.")
+            LOG.info("File message sent successfully over the normal Telethon connection.")
         finally:
+            if upload_client is not None:
+                await upload_client.disconnect()
             await client.disconnect()
 
-    LOG.info("File exceeds the Bot API upload threshold; using Telethon MTProto over HTTPS (%.1f MB).",
-             size / 1048576.0)
+    LOG.info(
+        "File exceeds the Bot API upload threshold; using HTTPS only for the MTProto file upload (%.1f MB).",
+        size / 1048576.0,
+    )
     try:
         asyncio.run(upload())
     except Exception as exc:
-        raise RuntimeError("Telethon HTTPS MTProto upload failed (%s): %s" %
+        raise RuntimeError("Telethon large-file upload/send failed (%s): %s" %
                            (type(exc).__name__, exc)) from exc
 
 
