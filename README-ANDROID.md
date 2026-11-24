@@ -1,29 +1,25 @@
 # Android app (on-device mode)
 
-This branch starts a standalone Android application. The app is intended to run yt-dlp on the phone through Chaquopy; it does not depend on a cloud worker.
+The Android app runs yt-dlp through Chaquopy and stores its working files in app-private storage. The Telegram transfer engine in this branch has been migrated to Wzgram MTProto: there is no HTTP Bot API upload path and no Kurigram fallback in the Python engine.
 
-## Current foundation
+## Telegram credentials
 
-- Settings screen for Telegram credentials and destination chat.
-- Import of a local `links.txt` using Android's document picker.
-- Foreground service scaffold for long-running work.
-- Embedded Python runtime with yt-dlp and a persistent app-private working directory.
-- GitHub Actions workflow which builds and uploads a debug APK artifact.
+- `BOT_TOKEN`: authorizes the bot identity through Wzgram/MTProto. It is not used for HTTP Bot API calls.
+- `API_ID` and `API_HASH`: from https://my.telegram.org/apps.
+- `TARGET_CHAT_ID`: destination channel username or numeric ID.
+- `OWNER_ID` and `BACKUP_CHAT_ID`: optional owner and database-backup destinations.
 
-The current first milestone validates the Android/Python integration and APK build. The full queue, Telegram Bot API transfer, SQLite checkpoints, backup/restore, pause/resume and media cleanup still need to be ported and tested before this app is ready for a real 6,000-link run.
+## Important Android build dependency
 
-## Configuration
+Wzgram depends on WarpCrypto, a Rust/PyO3 native extension. The published WarpCrypto wheels currently list desktop platforms (Windows, macOS and manylinux), not Android. Chaquopy requires Android-compatible wheels for native extensions, so changing the Python engine to Wzgram is not by itself enough to produce a working Android APK. This branch updates the Android dependency declaration to Wzgram, but a matching Android WarpCrypto wheel must be built and bundled before the Chaquopy APK build can succeed. Do not treat an APK from an earlier Kurigram build as the Wzgram version.
 
-Required: `BOT_TOKEN`, `API_ID`, `API_HASH`, `TARGET_CHAT_ID`.
+References:
+- [Wzgram installation and dependencies](https://wzgram.com/)
+- [WarpCrypto wheels](https://pypi.org/project/WarpCrypto/)
+- [Chaquopy Android wheel requirements](https://chaquo.com/chaquopy/doc/current/faq.html)
 
-Optional: `OWNER_ID`, `BACKUP_CHAT_ID`.
+## Transfer behavior
 
-Values are stored in app-private preferences on the device. Do not share the APK with credentials saved in it.
+Instagram media is downloaded locally with yt-dlp. Photos, videos, albums and database backup documents are sent with Wzgram. Telegram's own MTProto bot file-size limit still applies (about 2000 MiB per file); there are no application-level Bot API size thresholds or alternate upload transports.
 
-## Build
-
-Push to `android-native-downloader` or run the **Android Debug APK** workflow manually. Download the `instagram-bulk-downloader-debug` artifact from the Actions run.
-
-## Compatibility
-
-Chaquopy requires Android API 24 or later. The app currently targets Android 12+ behavior and includes ARM ABIs for common phones. Network, battery and foreground-service restrictions vary by Android version and device vendor.
+The app retains the existing local SQLite database export/restore interface. Its backup files are ordinary files selected through Android's document picker.
