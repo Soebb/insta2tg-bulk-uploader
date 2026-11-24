@@ -6,6 +6,7 @@ on:
     branches:
       - telethon-https-migration
       - telethon-https-upload-isolated
+      - telethon-https-auth-diagnostics
   workflow_dispatch:
 
 permissions:
@@ -41,7 +42,7 @@ jobs:
 
       - name: Verify target branch and Android transport
         run: |
-          test "$GITHUB_REF" = "refs/heads/telethon-https-migration" -o "$GITHUB_REF" = "refs/heads/telethon-https-upload-isolated"
+          test "$GITHUB_REF" = "refs/heads/telethon-https-migration" -o "$GITHUB_REF" = "refs/heads/telethon-https-upload-isolated" -o "$GITHUB_REF" = "refs/heads/telethon-https-auth-diagnostics"
           echo "Building commit: $(git rev-parse HEAD)"
           grep -q "from telethon import TelegramClient" app/src/main/python/engine.py
           grep -q "connection=TelegramHttpsConnection" app/src/main/python/engine.py
