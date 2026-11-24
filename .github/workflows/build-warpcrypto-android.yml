@@ -73,21 +73,28 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import re
 
           path = Path("server/pypi/build-wheel.py")
           source = path.read_text()
-          old = '''                if link_filename != filename:
-                    run(f"ln -s {filename} {reqs_lib_dir}/{link_filename}")
-          '''
-          new = '''                # Different Python SONAMEs may map to the same linker name.
-                if (link_filename != filename
-                        and not exists(f"{reqs_lib_dir}/{link_filename}")
-                        and not islink(f"{reqs_lib_dir}/{link_filename}")):
-                    run(f"ln -s {filename} {reqs_lib_dir}/{link_filename}")
-          '''
-          if old not in source:
-              raise SystemExit("Chaquopy 17.1 SONAME block did not match; refusing an unsafe patch")
-          path.write_text(source.replace(old, new, 1))
+          pattern = re.compile(
+              r'(?m)^(?P<indent>[ \\t]*)if link_filename != filename:\\n'
+              r'[ \\t]*run\\(f"ln -s \\{filename\\} \\{reqs_lib_dir\\}/\\{link_filename\\}"\\)$'
+          )
+
+          def replace_link(match):
+              indent = match.group("indent")
+              return (
+                  f"{indent}if (link_filename != filename\\n"
+                  f"{indent}        and not exists(join(reqs_lib_dir, link_filename))\\n"
+                  f"{indent}        and not islink(join(reqs_lib_dir, link_filename))):\\n"
+                  f"{indent}    run(f"ln -s {{filename}} {{reqs_lib_dir}}/{{link_filename}}")"
+              )
+
+          patched, count = pattern.subn(replace_link, source, count=1)
+          if count != 1:
+              raise SystemExit("Could not locate the exact Chaquopy SONAME link block")
+          path.write_text(patched)
           print("Patched duplicate Python SONAME handling.")
           PY
 
