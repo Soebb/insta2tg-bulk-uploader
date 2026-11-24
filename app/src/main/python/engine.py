@@ -192,7 +192,7 @@ def wait_if_paused():
         raise InterruptedError("Stop requested")
 
 
-async def send_database_backup(client, db, index, total, url):
+async def send_database_backup(db, index, total, url):
     backup_chat = CONFIG.get("BACKUP_CHAT_ID") or CONFIG.get("OWNER_ID")
     if not backup_chat:
         return
@@ -302,7 +302,7 @@ async def run_queue():
                 LOG.exception("[%d/%d] Download or upload failed: %s", index, len(links), url)
             finally:
                 shutil.rmtree(folder, ignore_errors=True)
-                await send_database_backup(client, db, index, len(links), url)
+                await send_database_backup(db, index, len(links), url)
         counts = {s: db.execute("SELECT COUNT(*) FROM posts WHERE status=?", (s,)).fetchone()[0]
                   for s in ("done", "failed", "pending", "processing")}
         LOG.info("Queue ended. " + ", ".join("%s=%s" % x for x in counts.items()))
