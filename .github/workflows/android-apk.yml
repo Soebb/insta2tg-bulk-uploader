@@ -1,5 +1,5 @@
 name: Android Debug APK
-# Includes the experimental Telegram Web HTTPS /apiw1 transport branch.
+# Builds debug APKs for the Telegram HTTPS upload experiments, including upload-only isolation.
 
 on:
   push:
@@ -8,6 +8,7 @@ on:
       - telethon-https-upload-isolated
       - telethon-https-auth-diagnostics
       - telethon-apiw1-test
+      - telethon-upload-only-https
   workflow_dispatch:
 
 permissions:
@@ -43,10 +44,19 @@ jobs:
 
       - name: Verify target branch and Android transport
         run: |
-          test "$GITHUB_REF" = "refs/heads/telethon-https-migration" -o "$GITHUB_REF" = "refs/heads/telethon-https-upload-isolated" -o "$GITHUB_REF" = "refs/heads/telethon-https-auth-diagnostics" -o "$GITHUB_REF" = "refs/heads/telethon-apiw1-test"
+          test "$GITHUB_REF" = "refs/heads/telethon-https-migration" -o "$GITHUB_REF" = "refs/heads/telethon-https-upload-isolated" -o "$GITHUB_REF" = "refs/heads/telethon-https-auth-diagnostics" -o "$GITHUB_REF" = "refs/heads/telethon-apiw1-test" -o "$GITHUB_REF" = "refs/heads/telethon-upload-only-https"
           echo "Building commit: $(git rev-parse HEAD)"
           grep -q "from telethon import TelegramClient" app/src/main/python/engine.py
-          grep -q "connection=TelegramHttpsConnection" app/src/main/python/engine.py
+          if [ "$GITHUB_REF" = "refs/heads/telethon-upload-only-https" ]; then
+            # The ordinary client must keep Telethon's default transport.
+            # Only the dedicated upload client may use the custom HTTPS route.
+            grep -q "upload_client = TelegramClient(" app/src/main/python/engine.py
+            grep -q "connection=TelegramHttpsConnection" app/src/main/python/engine.py
+            grep -q "await client.send_file(" app/src/main/python/engine.py
+            grep -q "await upload_client.upload_file(" app/src/main/python/engine.py
+          else
+            grep -q "connection=TelegramHttpsConnection" app/src/main/python/engine.py
+          fi
           grep -q 'TELEGRAM_HTTPS_PATH = "/apiw1"' app/src/main/python/telegram_https.py
           grep -q "part_size_kb = 512" app/src/main/python/engine.py
           grep -q "TELETHON_VIDEO_THRESHOLD = BOT_API_UPLOAD_LIMIT" app/src/main/python/engine.py
