@@ -92,22 +92,30 @@ jobs:
               raise SystemExit("Could not locate the exact Chaquopy SONAME link block")
 
           path.write_text("\n".join(lines) + "\n")
-          # PyO3 links libpython on Android even for abi3 extension modules.
-          # Keep the search path outside PREFIX/lib, which Chaquopy filters.
-          env_path = Path("target/android-env.sh")
-          env_text = env_path.read_text()
-          marker = "export CXXFLAGS=$CFLAGS"
-          addition = """# Chaquopy ships the stable-ABI library as libpython3.so.
-          # PyO3 0.29 may request the versioned libpython3.11 linker name.
-          ln -sf libpython3.so "$PREFIX/lib/libpython3.11.so"
-          test -f "$PREFIX/lib/libpython3.so"
-          test -f "$PREFIX/lib/libpython3.11.so"
+          # PyO3 0.29 links the stable-ABI extension against -lpython3.
+          # Chaquopy's compiler wrapper filters PREFIX/lib from linker search paths,
+          # so expose the same runtime library through a safe directory under PYPI_DIR.
+          build_script = Path("server/pypi/build-wheel.py")
+          build_text = build_script.read_text()
+          marker = '        tool_prefix = ABIS[self.abi].tool_prefix\n'
+          addition = """        # Keep PyO3's stable-ABI library outside the filtered host environment path.
+                  extra_lib_dir = join(PYPI_DIR, "build", "warpcrypto-rust-libs")
+                  ensure_dir(extra_lib_dir)
+                  extra_python_lib = join(extra_lib_dir, "libpython3.so")
+                  if exists(extra_python_lib) or islink(extra_python_lib):
+                      os.remove(extra_python_lib)
+                  os.symlink(self.python_lib, extra_python_lib)
           """
-          if marker not in env_text:
-              raise SystemExit("Could not locate android-env.sh insertion point")
-          env_path.write_text(env_text.replace(marker, marker + "\n\n" + addition, 1))
-          print("Added Chaquopy stable-ABI libpython linker alias without enabling PyO3 sysconfig discovery.")
-          PY
+          if marker not in build_text:
+              raise SystemExit("Could not locate get_rust_env_vars insertion point")
+          build_text = build_text.replace(marker, marker + addition, 1)
+          old_flag = '                f"-L native={self.host_env}/chaquopy/lib",\n'
+          new_flag = old_flag + '                f"-L native={extra_lib_dir}",\n'
+          if old_flag not in build_text:
+              raise SystemExit("Could not locate Chaquopy Rust library search path")
+          build_script.write_text(build_text.replace(old_flag, new_flag, 1))
+          print("Patched PyO3 to find libpython3.so through Chaquopy's allowed linker path.")
+
 
       - name: Build WarpCrypto wheel
         working-directory: ${{ runner.temp }}/chaquopy/server/pypi
