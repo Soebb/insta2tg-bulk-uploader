@@ -11,6 +11,7 @@ on:
       - "app/src/main/java/com/soebb/instabulk/crypto/**"
       - "app/src/main/python/warpcrypto.py"
       - "app/build.gradle"
+      - "settings.gradle"
       - ".github/workflows/wzgram-rust-jni-apk.yml"
 
 permissions:
