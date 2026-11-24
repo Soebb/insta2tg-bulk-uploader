@@ -92,7 +92,20 @@ jobs:
               raise SystemExit("Could not locate the exact Chaquopy SONAME link block")
 
           path.write_text("\n".join(lines) + "\n")
-          print("Patched duplicate Python SONAME handling.")
+          # PyO3 links libpython on Android even for abi3 extension modules.
+          # Keep the search path outside PREFIX/lib, which Chaquopy filters.
+          env_path = Path("target/android-env.sh")
+          env_text = env_path.read_text()
+          marker = "export CXXFLAGS=$CFLAGS"
+          addition = """export PYO3_CROSS_LIB_DIR="$RUNNER_TEMP/chaquopy-python-libs"
+          mkdir -p "$PYO3_CROSS_LIB_DIR"
+          ln -sf "$PREFIX/lib/libpython3.so" "$PYO3_CROSS_LIB_DIR/libpython3.so"
+          test -f "$PYO3_CROSS_LIB_DIR/libpython3.so"
+          """
+          if marker not in env_text:
+              raise SystemExit("Could not locate android-env.sh insertion point")
+          env_path.write_text(env_text.replace(marker, marker + "\n\n" + addition, 1))
+          print("Configured external PyO3 libpython search path.")
           PY
 
       - name: Build WarpCrypto wheel
