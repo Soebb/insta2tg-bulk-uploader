@@ -26,7 +26,7 @@ class TelegramHttpsPacketCodec(HttpPacketCodec):
             return await super().read_packet(reader)
         except asyncio.IncompleteReadError as exc:
             partial = exc.partial or b""
-            first_line = partial.split(b"\\r\\n", 1)[0][:300]
+            first_line = partial.split(b"\r\n", 1)[0][:300]
             logging.getLogger("telethon.network").error(
                 "Telegram HTTPS endpoint closed an HTTP response early; "
                 "partial response line=%r, partial_bytes=%d",
