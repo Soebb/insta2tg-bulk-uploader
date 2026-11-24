@@ -15,8 +15,7 @@ import threading
 import time
 from pathlib import Path
 
-from wzgram import Client
-from wzgram.types import InputMediaPhoto, InputMediaVideo
+from com.soebb.gogram import Gogram
 
 try:
     import yt_dlp
@@ -82,57 +81,26 @@ def db_open():
     return db
 
 
-def upload_progress(label):
-    last = [-5]
-    async def progress(current, total):
-        if not total:
-            return
-        percent = int(current * 100 / total)
-        if percent >= last[0] + 5 or current >= total:
-            last[0] = percent
-            LOG.info("Wzgram MTProto upload %s: %d%% (%.1f/%.1f MB).",
-                     label, percent, current / 1048576.0, total / 1048576.0)
-    return progress
-
-
-async def send_single(client, item, caption, chat_id, force_document=False):
+async def send_single(item, caption, chat_id, force_document=False):
     path = item["path"]
     size = path.stat().st_size
-    common = {
-        "chat_id": chat_id,
-        "caption": (caption or "")[:1024] or None,
-        "progress": upload_progress(path.name),
-    }
-    LOG.info("Uploading %s through Wzgram MTProto (%.1f MB).",
+    LOG.info("Uploading %s through Gogram MTProto (%.1f MB).",
              path.name, size / 1048576.0)
-    if item.get("is_video") and not force_document:
-        return await client.send_video(
-            video=str(path), supports_streaming=True, **common
-        )
-    if not force_document:
-        return await client.send_photo(photo=str(path), **common)
-    return await client.send_document(document=str(path), **common)
+    result = Gogram.sendMedia(str(path), (caption or "")[:1024], str(chat_id), force_document)
+    if result != "OK":
+        raise RuntimeError(str(result))
 
 
-async def send_album(client, files, caption, chat_id):
+async def send_album(files, caption, chat_id):
     if not 2 <= len(files) <= 10:
         raise ValueError("Telegram albums must contain between 2 and 10 media items.")
-    media = []
-    for index, item in enumerate(files):
-        path = item["path"]
-        cap = (caption or "")[:1024] if index == 0 else None
-        if item.get("is_video"):
-            media.append(InputMediaVideo(
-                str(path), caption=cap, supports_streaming=True
-            ))
-        else:
-            media.append(InputMediaPhoto(str(path), caption=cap))
+    paths = [str(item["path"]) for item in files]
     total_bytes = sum(x["path"].stat().st_size for x in files)
-    LOG.info("Uploading %d-item album through Wzgram MTProto (%.1f MB).",
+    LOG.info("Uploading %d-item album through Gogram MTProto (%.1f MB).",
              len(files), total_bytes / 1048576.0)
-    return await client.send_media_group(
-        chat_id, media, progress=upload_progress("album")
-    )
+    result = Gogram.sendAlbum(json.dumps(paths), (caption or "")[:1024], str(chat_id))
+    if result != "OK":
+        raise RuntimeError(str(result))
 
 
 def extract_files(url, folder):
@@ -237,7 +205,6 @@ async def send_database_backup(client, db, index, total, url):
         finally:
             target.close()
         await send_single(
-            client,
             {"path": backup, "is_video": False},
             "Database checkpoint after link %d/%d\n%s" % (index, total, url),
             backup_chat,
@@ -253,7 +220,7 @@ async def send_database_backup(client, db, index, total, url):
             pass
 
 
-async def run_queue(client):
+async def run_queue():
     global ACTIVE
     ACTIVE = True
     db = db_open()
@@ -303,9 +270,9 @@ async def run_queue(client):
                              index, len(links), chunk_no + 1, len(chunks), len(chunk),
                              upload_bytes / (1024.0 * 1024.0))
                     if len(chunk) == 1:
-                        await send_single(client, chunk[0], caption if chunk_no == 0 else "", CONFIG["TARGET_CHAT_ID"])
+                        await send_single(chunk[0], caption if chunk_no == 0 else "", CONFIG["TARGET_CHAT_ID"])
                     else:
-                        await send_album(client, chunk, caption if chunk_no == 0 else "", CONFIG["TARGET_CHAT_ID"])
+                        await send_album(chunk, caption if chunk_no == 0 else "", CONFIG["TARGET_CHAT_ID"])
                     db.execute("""INSERT INTO chunks(url,chunk_no,signature,status) VALUES(?,?,?,'sent')
                         ON CONFLICT(url,chunk_no) DO UPDATE SET signature=excluded.signature,status='sent',
                         updated_at=CURRENT_TIMESTAMP""", (url, chunk_no, sig))
@@ -369,21 +336,14 @@ def start(files_dir, settings_json):
             PAUSED.clear()
         else:
             PAUSED.set()
-        async def run_with_wzgram():
-            session_dir = ROOT / "wzgram"
-            session_dir.mkdir(parents=True, exist_ok=True)
-            async with Client(
-                "instagram_bulk_bot",
-                api_id=int(CONFIG["API_ID"]),
-                api_hash=CONFIG["API_HASH"],
-                bot_token=CONFIG["BOT_TOKEN"],
-                workdir=str(session_dir),
-                no_updates=True,
-                sleep_threshold=60,
-                max_concurrent_transmissions=1,
-            ) as client:
-                await run_queue(client)
-        asyncio.run(run_with_wzgram())
+        status = Gogram.start(str(ROOT), settings_json)
+        if status != "Gogram client ready":
+            raise RuntimeError(str(status))
+        try:
+            asyncio.run(run_queue())
+        finally:
+            close_status = Gogram.close()
+            LOG.info("%s", close_status)
         return "Queue finished"
     except Exception:
         LOG.exception("Engine startup/runtime error")
