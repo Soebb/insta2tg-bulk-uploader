@@ -31,6 +31,7 @@ class TelegramHttpPacketCodec(HttpPacketCodec):
     def __init__(self, connection):
         super().__init__(connection)
         self._diagnostic_request_id = 0
+        self._diagnostic_response_id = 0
 
     def encode_packet(self, data):
         self._diagnostic_request_id += 1
@@ -53,13 +54,14 @@ class TelegramHttpPacketCodec(HttpPacketCodec):
         return packet
 
     async def read_packet(self, reader):
-        request_id = self._diagnostic_request_id
-        LOG.info("HTTPS codec request #%d: waiting for HTTP response status line.", request_id)
+        self._diagnostic_response_id += 1
+        response_id = self._diagnostic_response_id
+        LOG.info("HTTPS codec response #%d: waiting for HTTP status line.", response_id)
         try:
             status_line = await reader.readline()
             LOG.info(
                 "HTTPS codec request #%d: received status line (%d bytes): %r",
-                request_id, len(status_line), status_line[:512],
+                response_id, len(status_line), status_line[:512],
             )
             if not status_line.endswith(b"\n"):
                 raise asyncio.IncompleteReadError(status_line, None)
@@ -110,11 +112,32 @@ class TelegramHttpPacketCodec(HttpPacketCodec):
             reason = status_parts[2] if len(status_parts) > 2 else ""
             LOG.info(
                 "HTTPS codec request #%d: HTTP status=%d reason=%r; parsed %d headers: %s",
-                request_id, status_code, reason, header_count,
+                response_id, status_code, reason, header_count,
                 "; ".join("%s=%r" % pair for pair in sorted(headers.items())) or "(none)",
             )
 
             if status_code != 200:
+                # Telegram transport errors are conveyed by the HTTP status.
+                # Read and log a small bounded preview only to identify whether
+                # this is Telegram's endpoint or an intermediary-generated page.
+                error_body = b""
+                error_length = headers.get("content-length")
+                if error_length is not None:
+                    try:
+                        error_size = int(error_length, 10)
+                        if 0 <= error_size <= 65536:
+                            error_body = await reader.readexactly(error_size)
+                    except Exception:
+                        LOG.exception(
+                            "HTTPS codec response #%d: could not read HTTP error body.",
+                            response_id,
+                        )
+                        raise
+                if error_body:
+                    LOG.warning(
+                        "HTTPS codec response #%d: HTTP error body preview (%d bytes): %r",
+                        response_id, len(error_body), error_body[:2048],
+                    )
                 raise ConnectionError(
                     f"Telegram HTTPS transport returned HTTP {status_code} {reason}".strip()
                 )
@@ -143,18 +166,18 @@ class TelegramHttpPacketCodec(HttpPacketCodec):
 
             LOG.info(
                 "HTTPS codec request #%d: reading exactly %d response body bytes.",
-                request_id, length,
+                response_id, length,
             )
             body = await reader.readexactly(length)
             LOG.info(
                 "HTTPS codec request #%d: response body received successfully (%d bytes).",
-                request_id, len(body),
+                response_id, len(body),
             )
             return body
         except Exception:
             LOG.exception(
-                "HTTPS codec request #%d: failed while reading/parsing HTTP response.",
-                request_id,
+                "HTTPS codec response #%d: failed while reading/parsing HTTP response.",
+                response_id,
             )
             raise
 
