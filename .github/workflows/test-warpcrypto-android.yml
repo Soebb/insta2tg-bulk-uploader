@@ -29,7 +29,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: warpcrypto-android-arm64-cp311
-          path: warpcrypto-test/wheels
+          path: warpcrypto-test/app/wheels
           repository: ${{ github.repository }}
           run-id: ${{ inputs.wheel_run_id || '45340620380' }}
           github-token: ${{ github.token }}
@@ -38,8 +38,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ls -lah warpcrypto-test/wheels
-          test -f warpcrypto-test/wheels/warpcrypto-2.2.0-1-cp311-cp311-android_24_arm64_v8a.whl
+          ls -lah warpcrypto-test/app/wheels
+          test -f warpcrypto-test/app/wheels/warpcrypto-2.2.0-1-cp311-cp311-android_24_arm64_v8a.whl
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
