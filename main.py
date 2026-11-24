@@ -48,8 +48,21 @@ log = logging.getLogger("instagram-bulk")
 # This is a Telethon MTProto client authenticated as the bot account.
 # ConnectionHttp uses TLS automatically when its port is 443. The custom
 # connection maps every Telegram DC to its official HTTPS hostname.
+# The control/download client keeps Telethon's normal MTProto TCP transport.
+# Only the dedicated upload client uses Telegram's official HTTPS transport.
 app = TelegramClient(
     SESSION_NAME,
+    API_ID,
+    API_HASH,
+    request_retries=5,
+    connection_retries=5,
+    retry_delay=2,
+    auto_reconnect=True,
+    flood_sleep_threshold=60,
+)
+
+upload_app = TelegramClient(
+    f"{SESSION_NAME}_https_upload",
     API_ID,
     API_HASH,
     connection=TelegramHttpsConnection,
@@ -95,7 +108,7 @@ async def send_database_backup(conn, index, total, url):
             target.commit()
         finally:
             target.close()
-        await app.send_file(
+        await upload_app.send_file(
             BACKUP_CHAT_ID,
             str(backup_path),
             caption=f"Database checkpoint after link {index}/{total}.\nCompleted item: {url}",
@@ -206,13 +219,13 @@ async def send_local(items, paths, caption):
             f"Media/file count mismatch: {len(items)} vs {len(paths)}"
         )
     if len(paths) == 1:
-        return await app.send_file(
+        return await upload_app.send_file(
             TARGET_CHAT_ID,
             str(paths[0]),
             caption=caption,
             supports_streaming=bool(items[0]["is_video"]),
         )
-    return await app.send_file(
+    return await upload_app.send_file(
         TARGET_CHAT_ID,
         [str(path) for path in paths],
         caption=caption,
@@ -415,18 +428,26 @@ async def stop_handler(event):
 
 
 async def main():
-    # Always start from an official HTTPS hostname. ConnectionHttp enables TLS
-    # because the selected port is 443; TelegramHttpsConnection also enforces
-    # the hostname mapping when Telegram changes the data center.
-    dc_id = app.session.dc_id if app.session.dc_id in DC_HOSTS else 2
-    app.session.set_dc(dc_id, DC_HOSTS[dc_id], 443)
-    app.session.save()
+    # Keep control, updates and Telegram downloads on Telethon's normal TCP
+    # transport. The second independent session is pinned to Telegram's
+    # official HTTPS hostname and is used only for outgoing file uploads.
+    upload_dc_id = upload_app.session.dc_id if upload_app.session.dc_id in DC_HOSTS else 2
+    upload_app.session.set_dc(upload_dc_id, DC_HOSTS[upload_dc_id], 443)
+    upload_app.session.save()
 
-    log.info("Starting Telegram bot through Telethon MTProto over HTTPS.")
+    log.info("Starting the control/download client with Telethon's default MTProto transport.")
     await app.start(bot_token=BOT_TOKEN)
+
+    log.info("Starting the dedicated Telethon HTTPS upload client.")
+    await upload_app.start(bot_token=BOT_TOKEN)
+
     me = await app.get_me()
+    upload_me = await upload_app.get_me()
+    if me.id != upload_me.id:
+        raise RuntimeError("Control and HTTPS upload sessions authenticated as different Telegram accounts.")
+
     log.info(
-        "Authenticated as @%s (id=%s). HTTPS transport is enabled for Telegram DCs 1-5.",
+        "Authenticated as @%s (id=%s). HTTPS is isolated to outgoing uploads.",
         me.username or "bot",
         me.id,
     )
@@ -434,6 +455,7 @@ async def main():
     try:
         await app.run_until_disconnected()
     finally:
+        await upload_app.disconnect()
         await app.disconnect()
 
 
