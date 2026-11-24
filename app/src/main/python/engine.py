@@ -17,6 +17,7 @@ from pathlib import Path
 
 from wzgram import Client
 from wzgram.types import InputMediaPhoto, InputMediaVideo
+import warpcrypto as _warpcrypto
 
 try:
     import yt_dlp
@@ -64,6 +65,26 @@ def setup_logging(root):
 
 def log_exception(message):
     LOG.exception(message)
+
+
+def verify_crypto_backend():
+    key = bytes(range(32))
+    iv = bytes(range(32))
+    plain = bytes(range(32))
+    encrypted = _warpcrypto.ige256_encrypt(plain, key, iv)
+    if _warpcrypto.ige256_decrypt(encrypted, key, iv) != plain:
+        raise RuntimeError("WarpCrypto JNI AES-IGE self-test failed")
+
+    auth_key = bytes(range(256))
+    auth_key_id = b"12345678"
+    session_id = b"abcdefgh"
+    body = b"JNI-WarpCrypto-self-test"
+    packed = _warpcrypto.pack_message(1, 1, body, 0, session_id, auth_key, auth_key_id)
+    msg_id, seq_no, length, decoded, _total_len = _warpcrypto.unpack_message(
+        packed, session_id, auth_key, auth_key_id, incoming=False
+    )
+    if (msg_id, seq_no, length, decoded) != (1, 1, len(body), body):
+        raise RuntimeError("WarpCrypto JNI MTProto pack/unpack self-test failed")
 
 
 def db_open():
@@ -356,6 +377,8 @@ def start(files_dir, settings_json):
             raise ValueError("Missing settings: " + ", ".join(missing))
         if yt_dlp is None:
             raise RuntimeError("yt-dlp failed to import. Check embedded Python packages.")
+        verify_crypto_backend()
+        LOG.info("WarpCrypto Rust/JNI backend initialized and self-test passed.")
         LOG.info("Downloader engine initialized. yt-dlp version: %s", yt_dlp.version.__version__)
         LOG.info("Destination chat: %s", CONFIG["TARGET_CHAT_ID"])
         if ACTIVE:
