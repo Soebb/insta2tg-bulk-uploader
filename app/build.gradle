@@ -33,7 +33,7 @@ chaquopy {
             install 'pyaes==1.6.1'
             install 'rsa==4.9.1'
             install 'pyasn1==0.6.1'
-            install 'telethon==1.45.0'
+            install 'telethon==1.46.0'
         }
     }
 }
