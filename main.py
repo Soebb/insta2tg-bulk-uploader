@@ -435,24 +435,24 @@ async def main():
     upload_app.session.set_dc(upload_dc_id, DC_HOSTS[upload_dc_id], 443)
     upload_app.session.save()
 
-    log.info("Starting the control/download client with Telethon's default MTProto transport.")
-    await app.start(bot_token=BOT_TOKEN)
-
-    log.info("Starting the dedicated Telethon HTTPS upload client.")
-    await upload_app.start(bot_token=BOT_TOKEN)
-
-    me = await app.get_me()
-    upload_me = await upload_app.get_me()
-    if me.id != upload_me.id:
-        raise RuntimeError("Control and HTTPS upload sessions authenticated as different Telegram accounts.")
-
-    log.info(
-        "Authenticated as @%s (id=%s). HTTPS is isolated to outgoing uploads.",
-        me.username or "bot",
-        me.id,
-    )
-    log.info("Bot ready. Send /start to process links.txt; /status to inspect progress.")
     try:
+        log.info("Starting the control/download client with Telethon's default MTProto transport.")
+        await app.start(bot_token=BOT_TOKEN)
+
+        log.info("Starting the dedicated Telethon HTTPS upload client.")
+        await upload_app.start(bot_token=BOT_TOKEN)
+
+        me = await app.get_me()
+        upload_me = await upload_app.get_me()
+        if me.id != upload_me.id:
+            raise RuntimeError("Control and HTTPS upload sessions authenticated as different Telegram accounts.")
+
+        log.info(
+            "Authenticated as @%s (id=%s). HTTPS is isolated to outgoing uploads.",
+            me.username or "bot",
+            me.id,
+        )
+        log.info("Bot ready. Send /start to process links.txt; /status to inspect progress.")
         await app.run_until_disconnected()
     finally:
         await upload_app.disconnect()
