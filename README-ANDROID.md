@@ -1,25 +1,52 @@
 # Android app (on-device mode)
 
-The Android app runs yt-dlp through Chaquopy and stores its working files in app-private storage. The Telegram transfer engine in this branch has been migrated to Wzgram MTProto: there is no HTTP Bot API upload path and no Kurigram fallback in the Python engine.
+The Android app keeps the existing Java UI, foreground service, Chaquopy runtime,
+yt-dlp Instagram downloader, queue handling, and SQLite progress database.
+
+Telegram transfers are handled by **Gogram over MTProto**, compiled as an Android
+AAR with the official Go mobile binding tool (gomobile bind). The generated
+library is linked from app/libs/gogram.aar; it is not a Bot API HTTP uploader
+and does not depend on Wzgram or WarpCrypto.
 
 ## Telegram credentials
 
-- `BOT_TOKEN`: authorizes the bot identity through Wzgram/MTProto. It is not used for HTTP Bot API calls.
-- `API_ID` and `API_HASH`: from https://my.telegram.org/apps.
-- `TARGET_CHAT_ID`: destination channel username or numeric ID.
-- `OWNER_ID` and `BACKUP_CHAT_ID`: optional owner and database-backup destinations.
+- BOT_TOKEN: authorizes the bot through Gogram's MTProto LoginBot flow.
+- API_ID and API_HASH: from https://my.telegram.org/apps.
+- TARGET_CHAT_ID: destination channel username or numeric ID.
+- OWNER_ID and BACKUP_CHAT_ID: optional owner and database-backup destinations.
 
-## Important Android build dependency
+## How the Android bridge works
 
-Wzgram depends on WarpCrypto, a Rust/PyO3 native extension. The published WarpCrypto wheels currently list desktop platforms (Windows, macOS and manylinux), not Android. Chaquopy requires Android-compatible wheels for native extensions, so changing the Python engine to Wzgram is not by itself enough to produce a working Android APK. This branch updates the Android dependency declaration to Wzgram, but a matching Android WarpCrypto wheel must be built and bundled before the Chaquopy APK build can succeed. Do not treat an APK from an earlier Kurigram build as the Wzgram version.
+1. Python/Chaquopy continues to download Instagram media with yt-dlp and manage
+   the existing SQLite queue and pause/resume/stop checkpoints.
+2. The Python engine calls the generated Java binding in
+   com.soebb.gogram.Gogram.
+3. The Go bridge owns the Gogram client, bot authentication, session file,
+   single-media uploads, album uploads, and upload progress logging.
+4. Java's existing foreground service and the app UI remain in place.
 
-References:
-- [Wzgram installation and dependencies](https://wzgram.com/)
-- [WarpCrypto wheels](https://pypi.org/project/WarpCrypto/)
-- [Chaquopy Android wheel requirements](https://chaquo.com/chaquopy/doc/current/faq.html)
+## Build the AAR
+
+The GitHub Actions workflow builds and publishes the AAR as the
+gogram-android-aar artifact for this branch. To build locally, install Go,
+JDK 17, Android SDK and Android NDK, then run:
+
+```sh
+cd mobile/gogram
+go mod tidy
+go install golang.org/x/mobile/cmd/gomobile@latest
+go install golang.org/x/mobile/cmd/gobind@latest
+gomobile init
+gomobile bind -v -target=android/arm,android/arm64 -androidapi 24 \
+  -javapkg com.soebb.gogram -o ../../app/libs/gogram.aar .
+```
+
+After generating the AAR, open the Android project in Android Studio and build
+the app. The configured Android ABIs are arm64-v8a and armeabi-v7a.
 
 ## Transfer behavior
 
-Instagram media is downloaded locally with yt-dlp. Photos, videos, albums and database backup documents are sent with Wzgram. Telegram's own MTProto bot file-size limit still applies (about 2000 MiB per file); there are no application-level Bot API size thresholds or alternate upload transports.
-
-The app retains the existing local SQLite database export/restore interface. Its backup files are ordinary files selected through Android's document picker.
+Photos, videos, albums (2–10 items), and SQLite checkpoint backup documents are
+sent through Gogram's MTProto media methods. The existing per-link progress
+database, duplicate skipping, retry state, and app-private download folders
+remain in the Python engine.
