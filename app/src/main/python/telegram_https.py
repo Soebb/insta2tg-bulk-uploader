@@ -1,13 +1,16 @@
 """Telethon HTTPS-only transport for Telegram data centers.
 
-ConnectionHttp negotiates TLS on port 443. This adapter pins each supported
-Telegram DC to its official hostname for both TLS SNI and the HTTP Host header.
+This experimental adapter uses Telegram Web's HTTPS MTProto endpoint (/apiw1)
+while keeping Telethon's existing HTTP framing unchanged. Only the request path
+is varied in this experiment.
 """
 import asyncio
 import logging
 
 from telethon.network import ConnectionHttp
 from telethon.network.connection.http import HttpPacketCodec
+
+TELEGRAM_HTTPS_PATH = "/apiw1"
 
 DC_HOSTS = {
     1: "pluto.web.telegram.org",
@@ -19,7 +22,20 @@ DC_HOSTS = {
 
 
 class TelegramHttpsPacketCodec(HttpPacketCodec):
-    """Same Telegram HTTP framing, but retain the server response for diagnostics."""
+    """Use Telegram Web's HTTPS path and retain response diagnostics."""
+
+    def encode_packet(self, data):
+        packet = super().encode_packet(data)
+        original_request_line = b"POST /api HTTP/1.1\r\n"
+        if not packet.startswith(original_request_line):
+            raise RuntimeError(
+                "Unexpected Telethon HTTP packet format; refusing to send "
+                "a request with an unverified HTTPS path."
+            )
+        return (
+            b"POST " + TELEGRAM_HTTPS_PATH.encode("ascii") + b" HTTP/1.1\r\n"
+            + packet[len(original_request_line):]
+        )
 
     async def read_packet(self, reader):
         try:
