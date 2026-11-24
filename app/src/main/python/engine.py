@@ -18,6 +18,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import telethon
 from telethon import TelegramClient
 from telegram_https import DC_HOSTS, TelegramHttpsConnection
 
@@ -581,6 +582,7 @@ def start(files_dir, settings_json):
         if yt_dlp is None:
             raise RuntimeError("yt-dlp failed to import. Check embedded Python packages.")
         LOG.info("Downloader engine initialized. yt-dlp version: %s", yt_dlp.version.__version__)
+        LOG.info("Telethon version: %s", telethon.__version__)
         LOG.info("Destination chat: %s", CONFIG["TARGET_CHAT_ID"])
         if ACTIVE:
             LOG.warning("A queue is already active.")
