@@ -1,8 +1,7 @@
 """Telethon HTTPS-only transport for Telegram data centers.
 
-This experimental adapter uses Telegram Web's HTTPS MTProto endpoint (/apiw1).
-It keeps Telethon's HTTP framing but uses the binary content type used by
-working /apiw1 clients.
+This experimental adapter mirrors Telegram's current HTTP Web route framing:
+POST /apiw1, a bare Host authority, keep-alive, and binary MTProto content.
 """
 import asyncio
 import logging
@@ -11,8 +10,6 @@ from telethon.network import ConnectionHttp
 from telethon.network.connection.http import HttpPacketCodec
 
 TELEGRAM_HTTPS_PATH = "/apiw1"
-TELEGRAM_CONTENT_TYPE = b"Content-Type: application/octet-stream\r\n"
-
 DC_HOSTS = {
     1: "pluto.web.telegram.org",
     2: "venus.web.telegram.org",
@@ -23,32 +20,35 @@ DC_HOSTS = {
 
 
 class TelegramHttpsPacketCodec(HttpPacketCodec):
-    """Use Telegram Web's HTTPS path and binary request content type."""
+    """Match Telegram Web's documented-in-code HTTP request framing."""
 
     def encode_packet(self, data):
         packet = super().encode_packet(data)
-        original_request_line = b"POST /api HTTP/1.1\r\n"
-        original_content_type = (
-            b"Content-Type: application/x-www-form-urlencoded\r\n"
+        request_line = b"POST /api HTTP/1.1\r\n"
+        content_type = b"Content-Type: application/x-www-form-urlencoded\r\n"
+        keep_alive = b"Keep-Alive: timeout=100000, max=10000000\r\n"
+        host_with_port = (
+            b"Host: " + str(self._conn._ip).encode("ascii") + b":443\r\n"
         )
-        if not packet.startswith(original_request_line):
+        if not packet.startswith(request_line):
             raise RuntimeError(
                 "Unexpected Telethon HTTP packet format; refusing to send "
                 "a request with an unverified HTTPS path."
             )
-        if packet.count(original_content_type) != 1:
+        if packet.count(content_type) != 1 or packet.count(host_with_port) != 1:
             raise RuntimeError(
-                "Unexpected Telethon HTTP headers; refusing to send a request "
-                "without the verified binary content type."
+                "Unexpected Telethon HTTP headers; refusing to send an "
+                "unverified Telegram Web request."
             )
 
         packet = (
             b"POST " + TELEGRAM_HTTPS_PATH.encode("ascii") + b" HTTP/1.1\r\n"
-            + packet[len(original_request_line):]
+            + packet[len(request_line):]
         )
-        return packet.replace(
-            original_content_type, TELEGRAM_CONTENT_TYPE, 1
-        )
+        packet = packet.replace(host_with_port, b"Host: " + str(self._conn._ip).encode("ascii") + b"\r\n", 1)
+        packet = packet.replace(content_type, b"Content-Type: application/octet-stream\r\n", 1)
+        packet = packet.replace(keep_alive, b"", 1)
+        return packet
 
     async def read_packet(self, reader):
         try:
