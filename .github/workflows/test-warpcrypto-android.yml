@@ -54,7 +54,7 @@ jobs:
           SDK_ROOT="/usr/local/lib/android/sdk"
           SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" -maxdepth 3 -type f -name sdkmanager | sort | tail -n 1)
           test -x "$SDKMANAGER"
-          yes | "$SDKMANAGER" --licenses >/dev/null
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
           test -d "$SDK_ROOT/platforms/android-35"
           test -d "$SDK_ROOT/build-tools/35.0.0"
