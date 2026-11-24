@@ -5,11 +5,13 @@ on:
   push:
     branches:
       - wzgram-rust-jni
+      - wzgram-upload-optimization
     paths:
       - "mobile/warpcrypto-jni/**"
       - "app/src/main/jniLibs/**"
       - "app/src/main/java/com/soebb/instabulk/crypto/**"
       - "app/src/main/python/warpcrypto.py"
+      - "app/src/main/python/engine.py"
       - "app/build.gradle"
       - "settings.gradle"
       - ".github/workflows/wzgram-rust-jni-apk.yml"
@@ -18,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: wzgram-rust-jni
+  group: wzgram-upload-optimization
   cancel-in-progress: true
 
 jobs:
