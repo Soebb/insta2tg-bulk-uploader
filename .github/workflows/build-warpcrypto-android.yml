@@ -38,7 +38,9 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install Android NDK
-        run: sdkmanager "ndk;27.2.12479018"
+        run: |
+          sdkmanager "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
 
       - name: Install build tools
         run: |
@@ -50,17 +52,12 @@ jobs:
 
       - name: Download matching Chaquopy Python runtime
         working-directory: ${{ runner.temp }}/chaquopy
-        env:
-          ANDROID_HOME: ${{ env.ANDROID_HOME }}
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
         run: |
+          test -d "$ANDROID_NDK_HOME"
           target/download-target.sh maven/com/chaquo/python/target/3.11.17-1
 
       - name: Build WarpCrypto wheel
         working-directory: ${{ runner.temp }}/chaquopy/server/pypi
-        env:
-          ANDROID_HOME: ${{ env.ANDROID_HOME }}
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
         run: |
           python build-wheel.py --verbose --python 3.11 --abi arm64-v8a --api-level 24 "$GITHUB_WORKSPACE/android-wheels/warpcrypto"
 
