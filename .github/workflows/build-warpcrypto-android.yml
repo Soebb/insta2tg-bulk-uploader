@@ -71,7 +71,25 @@ jobs:
       - name: Patch Chaquopy 17.1 duplicate Python SONAME handling
         working-directory: ${{ runner.temp }}/chaquopy
         run: |
-          patch -p1 -i "$GITHUB_WORKSPACE/android-wheels/warpcrypto/patches/0002-chaquopy-17.1-duplicate-python-soname.patch"
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("server/pypi/build-wheel.py")
+          source = path.read_text()
+          old = '''                if link_filename != filename:
+                    run(f"ln -s {filename} {reqs_lib_dir}/{link_filename}")
+          '''
+          new = '''                # Different Python SONAMEs may map to the same linker name.
+                if (link_filename != filename
+                        and not exists(f"{reqs_lib_dir}/{link_filename}")
+                        and not islink(f"{reqs_lib_dir}/{link_filename}")):
+                    run(f"ln -s {filename} {reqs_lib_dir}/{link_filename}")
+          '''
+          if old not in source:
+              raise SystemExit("Chaquopy 17.1 SONAME block did not match; refusing an unsafe patch")
+          path.write_text(source.replace(old, new, 1))
+          print("Patched duplicate Python SONAME handling.")
+          PY
 
       - name: Build WarpCrypto wheel
         working-directory: ${{ runner.temp }}/chaquopy/server/pypi
