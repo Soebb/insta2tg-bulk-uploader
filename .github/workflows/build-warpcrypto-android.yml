@@ -68,6 +68,11 @@ jobs:
           echo "Checking stable-ABI Python library in $target_zip"
           unzip -l "$target_zip" | grep -F 'jniLibs/arm64-v8a/libpython3.so'
 
+      - name: Patch Chaquopy 17.1 duplicate Python SONAME handling
+        working-directory: ${{ runner.temp }}/chaquopy
+        run: |
+          patch -p1 -i "$GITHUB_WORKSPACE/android-wheels/warpcrypto/patches/0002-chaquopy-17.1-duplicate-python-soname.patch"
+
       - name: Build WarpCrypto wheel
         working-directory: ${{ runner.temp }}/chaquopy/server/pypi
         run: |
