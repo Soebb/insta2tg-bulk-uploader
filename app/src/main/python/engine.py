@@ -250,8 +250,12 @@ def send_telethon(item, caption, chat_id, force_document=False):
         )
         upload_client = None
         try:
-            dc_id = client.session.dc_id if client.session.dc_id in DC_HOSTS else 2
-            client.session.set_dc(dc_id, DC_HOSTS[dc_id], 443)
+            # Authenticate the regular client through Telegram's normal MTProto
+            # DC endpoint, never through the web.telegram.org HTTPS hostname.
+            # The custom HTTPS hostname is selected only by TelegramHttpsConnection
+            # on the separate upload_client below.
+            dc_id = 2
+            client.session.set_dc(dc_id, "149.154.167.51", 443)
             client.session.save()
             await client.start(bot_token=CONFIG["BOT_TOKEN"])
 
