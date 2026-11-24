@@ -1,0 +1,1 @@
+Trigger after replacing Android SDK setup action with direct sdkmanager calls.
