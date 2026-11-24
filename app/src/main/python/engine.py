@@ -17,7 +17,6 @@ from pathlib import Path
 
 from wzgram import Client
 from wzgram.types import InputMediaPhoto, InputMediaVideo
-from wzgram.errors import FloodWait
 
 try:
     import yt_dlp
@@ -99,11 +98,6 @@ def upload_progress(label):
 async def send_single(client, item, caption, chat_id, force_document=False):
     path = item["path"]
     size = path.stat().st_size
-    if size > 2_000_000_000:
-        raise RuntimeError(
-            "Telegram's current MTProto bot upload limit is about 2 GB per file; "
-            "this file is larger than that platform limit."
-        )
     common = {
         "chat_id": chat_id,
         "caption": (caption or "")[:1024] or None,
@@ -126,8 +120,6 @@ async def send_album(client, files, caption, chat_id):
     media = []
     for index, item in enumerate(files):
         path = item["path"]
-        if path.stat().st_size > 2_000_000_000:
-            raise RuntimeError("A media item exceeds Telegram's 2 GB MTProto bot upload limit.")
         cap = (caption or "")[:1024] if index == 0 else None
         if item.get("is_video"):
             media.append(InputMediaVideo(
