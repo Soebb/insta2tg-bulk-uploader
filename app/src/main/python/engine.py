@@ -241,6 +241,8 @@ def send_telethon(item, caption, chat_id, force_document=False):
             retry_delay=2,
             auto_reconnect=True,
             flood_sleep_threshold=60,
+            timeout=30,
+            raise_last_call_error=True,
         )
         dc_id = client.session.dc_id if client.session.dc_id in DC_HOSTS else 2
         client.session.set_dc(dc_id, DC_HOSTS[dc_id], 443)
@@ -257,14 +259,32 @@ def send_telethon(item, caption, chat_id, force_document=False):
                     LOG.info("Telethon HTTPS upload: %d%% (%.1f/%.1f MB).",
                              percent, current / 1048576.0, total / 1048576.0)
 
+            # Telethon's automatic chunk size is conservative for medium files.
+            # HTTPS transport has one HTTP request/response per MTProto packet, so
+            # explicitly use the maximum supported 512 KiB part size to reduce
+            # request count and HTTP framing overhead on large uploads.
+            part_size_kb = 512
+            part_count = (size + part_size_kb * 1024 - 1) // (part_size_kb * 1024)
+            LOG.info(
+                "Starting HTTPS upload with %d KiB chunks (%d parts).",
+                part_size_kb,
+                part_count,
+            )
+            uploaded_file = await client.upload_file(
+                str(item["path"]),
+                file_size=size,
+                file_name=item["path"].name,
+                part_size_kb=part_size_kb,
+                progress_callback=progress,
+            )
             await client.send_file(
                 chat_id,
-                str(item["path"]),
+                uploaded_file,
                 caption=(caption or "")[:1024] or None,
                 force_document=bool(force_document or not item["is_video"]),
                 supports_streaming=bool(item["is_video"] and not force_document),
-                progress_callback=progress,
             )
+            LOG.info("HTTPS upload completed and Telegram message was sent.")
         finally:
             await client.disconnect()
 
