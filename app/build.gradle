@@ -30,7 +30,7 @@ chaquopy {
         pip {
             install 'yt-dlp'
             options '--find-links', 'wheels'
-            install 'kurigram==2.2.27'
+            install 'wzgram'
         }
     }
 }
