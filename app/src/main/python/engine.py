@@ -5,7 +5,6 @@ to downloader.log so the UI can display diagnostics without requiring ADB.
 """
 import asyncio
 import hashlib
-import http.client
 import json
 import logging
 from logging.handlers import RotatingFileHandler
@@ -14,9 +13,11 @@ import shutil
 import sqlite3
 import threading
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
+
+from wzgram import Client
+from wzgram.types import InputMediaPhoto, InputMediaVideo
+from wzgram.errors import FloodWait
 
 try:
     import yt_dlp
@@ -82,267 +83,64 @@ def db_open():
     return db
 
 
-def telegram_request(method, fields=None, files=None):
-    """Stream multipart uploads to Telegram without buffering whole media files in RAM."""
-    token = CONFIG["BOT_TOKEN"]
-    fields = fields or {}
-    files = files or {}
-    boundary = "----AndroidBulkBoundary" + hashlib.sha1(
-        ("%s-%s" % (time.time_ns(), threading.get_ident())).encode()
-    ).hexdigest()
-    boundary_bytes = boundary.encode("ascii")
-
-    field_parts = []
-    for key, value in fields.items():
-        part = (
-            b"--" + boundary_bytes + b"\r\n"
-            + ('Content-Disposition: form-data; name="%s"\r\n\r\n' % key).encode("utf-8")
-            + str(value).encode("utf-8") + b"\r\n"
-        )
-        field_parts.append(part)
-
-    file_parts = []
-    for key, file_path in files.items():
-        path = Path(file_path)
-        if not path.is_file():
-            raise FileNotFoundError("Upload file does not exist: %s" % path.name)
-        header = (
-            b"--" + boundary_bytes + b"\r\n"
-            + ('Content-Disposition: form-data; name="%s"; filename="%s"\r\n' %
-               (key, path.name.replace('"', "_"))).encode("utf-8")
-            + b"Content-Type: application/octet-stream\r\n\r\n"
-        )
-        file_parts.append((header, path))
-    closing = b"--" + boundary_bytes + b"--\r\n"
-    content_length = sum(map(len, field_parts)) + len(closing)
-    content_length += sum(len(header) + path.stat().st_size + 2 for header, path in file_parts)
-    total_bytes = content_length
-
-    for attempt in range(1, 4):
-        connection = None
-        sent_bytes = 0
-        try:
-            # Use a bounded timeout while transmitting the body, then allow
-            # Telegram much longer to return the API response on slow mobile networks.
-            connection = http.client.HTTPSConnection("api.telegram.org", timeout=180)
-            connection.putrequest("POST", "/bot%s/%s" % (token, method))
-            connection.putheader("Content-Type", "multipart/form-data; boundary=%s" % boundary)
-            connection.putheader("Content-Length", str(content_length))
-            connection.putheader("Connection", "close")
-            connection.endheaders()
-
-            def send_piece(data):
-                nonlocal sent_bytes
-                connection.send(data)
-                sent_bytes += len(data)
-
-            for part in field_parts:
-                send_piece(part)
-            for header, path in file_parts:
-                send_piece(header)
-                with path.open("rb") as stream:
-                    while True:
-                        chunk = stream.read(256 * 1024)
-                        if not chunk:
-                            break
-                        send_piece(chunk)
-                send_piece(b"\r\n")
-            send_piece(closing)
-
-            if connection.sock is not None:
-                # Uploads can finish while the Bot API/network path is still
-                # processing the media. The old 240s socket timeout caused
-                # false-negative delivery results on slower connections.
-                connection.sock.settimeout(900)
-                LOG.info("Upload body sent (%d bytes); waiting up to 15 minutes for Telegram's response.",
-                         sent_bytes)
-            response = connection.getresponse()
-            raw = response.read()
-            try:
-                payload = json.loads(raw.decode("utf-8", "replace"))
-            except Exception:
-                payload = {"ok": False, "description": "Telegram returned an unreadable response: %s" %
-                           raw[:500].decode("utf-8", "replace")}
-            if response.status >= 500 and attempt < 3:
-                LOG.warning("Telegram returned HTTP %s for %s (attempt %d/3); retrying.",
-                            response.status, method, attempt)
-                time.sleep(attempt * 3)
-                continue
-            if response.status >= 400:
-                raise RuntimeError("Telegram HTTP %s: %s" %
-                                   (response.status, payload.get("description", payload)))
-            if not payload.get("ok"):
-                params = payload.get("parameters") or {}
-                if params.get("retry_after") and attempt < 3:
-                    delay = min(int(params["retry_after"]), 30)
-                    LOG.warning("Telegram rate limit for %s; retrying after %d seconds.",
-                                method, delay)
-                    time.sleep(delay)
-                    continue
-                raise RuntimeError("Telegram API: " + str(payload.get("description", payload)))
-            return payload.get("result")
-        except (http.client.RemoteDisconnected, http.client.IncompleteRead,
-                TimeoutError, OSError, http.client.HTTPException) as exc:
-            # If the complete request body was transmitted, Telegram may already
-            # have accepted it even though its response was lost. Do not resend
-            # automatically in that ambiguous case, to avoid duplicate posts.
-            if sent_bytes >= total_bytes:
-                raise RuntimeError(
-                    "Telegram did not return a response after all %d upload bytes were sent "
-                    "(%s); delivery status is unknown. Check the destination chat before retrying."
-                    % (total_bytes, type(exc).__name__)
-                ) from exc
-            if attempt >= 3:
-                raise RuntimeError(
-                    "Telegram upload connection failed after 3 attempts (%s); "
-                    "sent %d of %d bytes. Check network stability and try again."
-                    % (type(exc).__name__, sent_bytes, total_bytes)
-                ) from exc
-            LOG.warning("Telegram connection interrupted during %s (attempt %d/3, %d/%d bytes); retrying.",
-                        method, attempt, sent_bytes, total_bytes)
-            time.sleep(attempt * 3)
-        finally:
-            if connection is not None:
-                connection.close()
-    raise RuntimeError("Telegram upload failed after retries.")
+def upload_progress(label):
+    last = [-5]
+    async def progress(current, total):
+        if not total:
+            return
+        percent = int(current * 100 / total)
+        if percent >= last[0] + 5 or current >= total:
+            last[0] = percent
+            LOG.info("Wzgram MTProto upload %s: %d%% (%.1f/%.1f MB).",
+                     label, percent, current / 1048576.0, total / 1048576.0)
+    return progress
 
 
-BOT_API_UPLOAD_LIMIT = 50_000_000
-BOT_API_PHOTO_LIMIT = 10_000_000
-KURIGRAM_VIDEO_THRESHOLD = 20 * 1024 * 1024
-MTProto_BOT_UPLOAD_LIMIT = 2_000_000_000
-
-
-def send_kurigram(item, caption, chat_id, force_document=False):
-    """Upload one oversized file directly over MTProto using the existing bot identity."""
-    try:
-        from pyrogram import Client
-    except Exception as exc:
+async def send_single(client, item, caption, chat_id, force_document=False):
+    path = item["path"]
+    size = path.stat().st_size
+    if size > 2_000_000_000:
         raise RuntimeError(
-            "Kurigram is unavailable. Rebuild/install the app with the bundled Kurigram package."
-        ) from exc
-
-    size = item["path"].stat().st_size
-    if size > MTProto_BOT_UPLOAD_LIMIT:
-        raise RuntimeError("This file is larger than the supported 2 GB MTProto bot upload limit.")
-    api_id = str(CONFIG.get("API_ID", "")).strip()
-    api_hash = str(CONFIG.get("API_HASH", "")).strip()
-    if not api_id or not api_hash:
-        raise RuntimeError("API_ID and API_HASH are required for large-file MTProto uploads.")
-
-    session_dir = ROOT / "kurigram"
-    session_dir.mkdir(parents=True, exist_ok=True)
-    last_progress = [-5]
-
-    async def upload():
-        client = Client(
-            name="instagram_bulk_bot",
-            api_id=int(api_id),
-            api_hash=api_hash,
-            bot_token=CONFIG["BOT_TOKEN"],
-            workdir=str(session_dir),
-            no_updates=True,
-            sleep_threshold=60,
+            "Telegram's current MTProto bot upload limit is about 2 GB per file; "
+            "this file is larger than that platform limit."
         )
-        await client.start()
-        try:
-            def progress(current, total, *_args):
-                if not total:
-                    return
-                percent = int(current * 100 / total)
-                if percent >= last_progress[0] + 5 or current >= total:
-                    last_progress[0] = percent
-                    LOG.info("Kurigram MTProto upload: %d%% (%.1f/%.1f MB).",
-                             percent, current / 1048576.0, total / 1048576.0)
-
-            common = {
-                "chat_id": chat_id,
-                "caption": (caption or "")[:1024] or None,
-                "progress": progress,
-            }
-            if item["is_video"] and not force_document:
-                await client.send_video(
-                    video=str(item["path"]),
-                    supports_streaming=True,
-                    **common
-                )
-            else:
-                await client.send_document(
-                    document=str(item["path"]),
-                    **common
-                )
-        finally:
-            await client.stop()
-
-    LOG.info("File exceeds the Bot API upload limit; using Kurigram MTProto (%.1f MB).",
-             size / 1048576.0)
-    try:
-        asyncio.run(upload())
-    except Exception as exc:
-        raise RuntimeError("Kurigram MTProto upload failed (%s): %s" %
-                           (type(exc).__name__, exc)) from exc
-
-
-def send_single(item, caption, chat_id, force_document=False):
-    size = item["path"].stat().st_size
-    is_video = item["is_video"]
-    # Route larger videos directly through MTProto. On slow/mobile VPN paths,
-    # avoid spending time on repeated Bot API uploads that are likely to break.
-    if is_video and size > KURIGRAM_VIDEO_THRESHOLD:
-        LOG.info("Video exceeds the 20 MiB direct-upload threshold; using Kurigram MTProto.")
-        return send_kurigram(item, caption, chat_id, force_document=force_document)
-    if size > BOT_API_UPLOAD_LIMIT:
-        return send_kurigram(item, caption, chat_id, force_document=force_document)
-
-    # Database files and other non-media payloads must be sent as documents.
-    # Bot API sendPhoto has a stricter 10 MB upload limit, so larger images
-    # are also sent as documents instead of failing a valid <=50 MB upload.
-    use_document = force_document or (not is_video and size > BOT_API_PHOTO_LIMIT)
-    method = "sendDocument" if use_document else ("sendVideo" if is_video else "sendPhoto")
-    key = "document" if use_document else ("video" if is_video else "photo")
-    fields = {"chat_id": chat_id}
-    if caption:
-        fields["caption"] = caption[:1024]
-    try:
-        return telegram_request(method, fields, {key: item["path"]})
-    except RuntimeError as exc:
-        # Only fall back when the Bot API connection broke before the full
-        # multipart body was sent. A lost response after a complete upload is
-        # deliberately NOT retried because Telegram may already have posted it.
-        if "Telegram upload connection failed after 3 attempts" not in str(exc):
-            raise
-        LOG.warning(
-            "Bot API upload repeatedly interrupted; retrying this file through Kurigram MTProto."
+    common = {
+        "chat_id": chat_id,
+        "caption": (caption or "")[:1024] or None,
+        "progress": upload_progress(path.name),
+    }
+    LOG.info("Uploading %s through Wzgram MTProto (%.1f MB).",
+             path.name, size / 1048576.0)
+    if item.get("is_video") and not force_document:
+        return await client.send_video(
+            video=str(path), supports_streaming=True, **common
         )
-        return send_kurigram(item, caption, chat_id, force_document=force_document)
+    if not force_document and item.get("is_photo"):
+        return await client.send_photo(photo=str(path), **common)
+    return await client.send_document(document=str(path), **common)
 
 
-def send_album(files, caption, chat_id):
-    # Albums with oversized items are sent individually, choosing the transport
-    # per file so small files still use the regular Bot API.
-    oversized = any(
-        item["path"].stat().st_size >
-        (KURIGRAM_VIDEO_THRESHOLD if item["is_video"] else BOT_API_PHOTO_LIMIT)
-        for item in files
-    )
-    if oversized:
-        results = []
-        for index, item in enumerate(files):
-            results.append(send_single(item, caption if index == 0 else "", chat_id))
-        return results
-
+async def send_album(client, files, caption, chat_id):
+    if not 2 <= len(files) <= 10:
+        raise ValueError("Telegram albums must contain between 2 and 10 media items.")
     media = []
-    uploads = {}
-    for i, item in enumerate(files):
-        field = "file%d" % i
-        media.append({
-            "type": "video" if item["is_video"] else "photo",
-            "media": "attach://" + field,
-        })
-        uploads[field] = item["path"]
-        if i == 0 and caption:
-            media[0]["caption"] = caption[:1024]
-    return telegram_request("sendMediaGroup", {"chat_id": chat_id, "media": json.dumps(media)}, uploads)
+    for index, item in enumerate(files):
+        path = item["path"]
+        if path.stat().st_size > 2_000_000_000:
+            raise RuntimeError("A media item exceeds Telegram's 2 GB MTProto bot upload limit.")
+        cap = (caption or "")[:1024] if index == 0 else None
+        if item.get("is_video"):
+            media.append(InputMediaVideo(
+                str(path), caption=cap, supports_streaming=True
+            ))
+        else:
+            media.append(InputMediaPhoto(str(path), caption=cap))
+    total_bytes = sum(x["path"].stat().st_size for x in files)
+    LOG.info("Uploading %d-item album through Wzgram MTProto (%.1f MB).",
+             len(files), total_bytes / 1048576.0)
+    return await client.send_media_group(
+        chat_id, media, progress=upload_progress("album")
+    )
 
 
 def extract_files(url, folder):
@@ -434,7 +232,7 @@ def wait_if_paused():
         raise InterruptedError("Stop requested")
 
 
-def send_database_backup(db, index, total, url):
+async def send_database_backup(client, db, index, total, url):
     backup_chat = CONFIG.get("BACKUP_CHAT_ID") or CONFIG.get("OWNER_ID")
     if not backup_chat:
         return
@@ -446,9 +244,9 @@ def send_database_backup(db, index, total, url):
             db.backup(target)
         finally:
             target.close()
-        backup_item = {"path": backup, "is_video": False}
-        send_single(
-            backup_item,
+        await send_single(
+            client,
+            {"path": backup, "is_video": False},
             "Database checkpoint after link %d/%d\n%s" % (index, total, url),
             backup_chat,
             force_document=True,
@@ -463,7 +261,7 @@ def send_database_backup(db, index, total, url):
             pass
 
 
-def run_queue():
+async def run_queue(client):
     global ACTIVE
     ACTIVE = True
     db = db_open()
@@ -513,9 +311,9 @@ def run_queue():
                              index, len(links), chunk_no + 1, len(chunks), len(chunk),
                              upload_bytes / (1024.0 * 1024.0))
                     if len(chunk) == 1:
-                        send_single(chunk[0], caption if chunk_no == 0 else "", CONFIG["TARGET_CHAT_ID"])
+                        await send_single(client, chunk[0], caption if chunk_no == 0 else "", CONFIG["TARGET_CHAT_ID"])
                     else:
-                        send_album(chunk, caption if chunk_no == 0 else "", CONFIG["TARGET_CHAT_ID"])
+                        await send_album(client, chunk, caption if chunk_no == 0 else "", CONFIG["TARGET_CHAT_ID"])
                     db.execute("""INSERT INTO chunks(url,chunk_no,signature,status) VALUES(?,?,?,'sent')
                         ON CONFLICT(url,chunk_no) DO UPDATE SET signature=excluded.signature,status='sent',
                         updated_at=CURRENT_TIMESTAMP""", (url, chunk_no, sig))
@@ -545,7 +343,7 @@ def run_queue():
                 LOG.exception("[%d/%d] Download or upload failed: %s", index, len(links), url)
             finally:
                 shutil.rmtree(folder, ignore_errors=True)
-                send_database_backup(db, index, len(links), url)
+                await send_database_backup(client, db, index, len(links), url)
         counts = {s: db.execute("SELECT COUNT(*) FROM posts WHERE status=?", (s,)).fetchone()[0]
                   for s in ("done", "failed", "pending", "processing")}
         LOG.info("Queue ended. " + ", ".join("%s=%s" % x for x in counts.items()))
@@ -560,7 +358,7 @@ def start(files_dir, settings_json):
     setup_logging(ROOT)
     try:
         CONFIG = json.loads(settings_json)
-        required = ("BOT_TOKEN", "TARGET_CHAT_ID")
+        required = ("BOT_TOKEN", "API_ID", "API_HASH", "TARGET_CHAT_ID")
         missing = [x for x in required if not str(CONFIG.get(x, "")).strip()]
         if missing:
             raise ValueError("Missing settings: " + ", ".join(missing))
@@ -579,7 +377,21 @@ def start(files_dir, settings_json):
             PAUSED.clear()
         else:
             PAUSED.set()
-        run_queue()
+        async def run_with_wzgram():
+            session_dir = ROOT / "wzgram"
+            session_dir.mkdir(parents=True, exist_ok=True)
+            async with Client(
+                "instagram_bulk_bot",
+                api_id=int(CONFIG["API_ID"]),
+                api_hash=CONFIG["API_HASH"],
+                bot_token=CONFIG["BOT_TOKEN"],
+                workdir=str(session_dir),
+                no_updates=True,
+                sleep_threshold=60,
+                max_concurrent_transmissions=1,
+            ) as client:
+                await run_queue(client)
+        asyncio.run(run_with_wzgram())
         return "Queue finished"
     except Exception:
         LOG.exception("Engine startup/runtime error")
