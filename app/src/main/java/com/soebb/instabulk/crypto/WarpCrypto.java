@@ -16,7 +16,7 @@ public final class WarpCrypto {
 
     public static native byte[] nativeIgeEncrypt(byte[] data, byte[] key, byte[] iv);
     public static native byte[] nativeIgeDecrypt(byte[] data, byte[] key, byte[] iv);
-    public static native byte[] nativeCtr(byte[] data, byte[] key, byte[] iv, byte[] state);
+    public static native byte[][] nativeCtr(byte[] data, byte[] key, byte[] iv, byte[] state);
     public static native byte[][] nativeKdf(byte[] authKey, byte[] msgKey, boolean outgoing);
     public static native byte[] nativePackMessage(long msgId, int seqNo, byte[] body, long salt,
                                                    byte[] sessionId, byte[] authKey, byte[] authKeyId);
