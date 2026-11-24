@@ -328,16 +328,6 @@ async def process_one(conn, index, total, url):
 
     conn.execute("UPDATE posts SET status='done',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE url=?", (url,))
     conn.commit()
-    if local_files:
-        for path in local_files:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                log.warning("Could not delete temporary file %s", path)
-        try:
-            (DOWNLOAD_DIR / key).rmdir()
-        except OSError:
-            pass
 
 
 def allowed(message):
