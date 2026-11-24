@@ -8,9 +8,12 @@ ConnectionHttp automatically enables TLS when the port is 443. The connect
 override below adds bounded DNS/TLS diagnostics without changing the codec.
 """
 import asyncio
+import logging
 import socket
 
 from telethon.network import ConnectionHttp
+
+LOG = logging.getLogger("instagram_bulk_android")
 
 DC_HOSTS = {
     1: "pluto.web.telegram.org",
@@ -53,7 +56,7 @@ class TelegramHttpsConnection(ConnectionHttp):
         # TelegramClient passes its connection timeout here. Keep a finite
         # fallback in case this connection is ever used directly.
         timeout = timeout or 30
-        self._log.info(
+        LOG.info(
             "Telegram HTTPS transport: resolving %s:%s (timeout=%ss).",
             self._ip,
             self._port,
@@ -69,7 +72,7 @@ class TelegramHttpsConnection(ConnectionHttp):
                 timeout=timeout,
             )
         except Exception:
-            self._log.exception(
+            LOG.exception(
                 "Telegram HTTPS transport: DNS resolution failed for %s.",
                 self._ip,
             )
@@ -80,7 +83,7 @@ class TelegramHttpsConnection(ConnectionHttp):
             for item in addresses
             if item and item[4]
         })
-        self._log.info(
+        LOG.info(
             "Telegram HTTPS transport: DNS resolved %s to %s; starting TLS connection.",
             self._ip,
             ", ".join(resolved) or "(no addresses)",
@@ -89,13 +92,13 @@ class TelegramHttpsConnection(ConnectionHttp):
             # ConnectionHttp sets ssl=True automatically because port == 443.
             await super().connect(timeout=timeout)
         except Exception:
-            self._log.exception(
+            LOG.exception(
                 "Telegram HTTPS transport: TCP/TLS connection failed for %s:%s.",
                 self._ip,
                 self._port,
             )
             raise
-        self._log.info(
+        LOG.info(
             "Telegram HTTPS transport: TLS connection established to %s:%s.",
             self._ip,
             self._port,
