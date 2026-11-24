@@ -7,12 +7,16 @@ import struct
 from com.soebb.instabulk.crypto import WarpCrypto as _Native
 
 
+def _as_bytes(value):
+    return bytes((int(item) & 0xFF for item in value))
+
+
 def ige256_encrypt(data: bytes, key: bytes, iv: bytes) -> bytes:
     if len(key) != 32 or len(iv) != 32:
         raise ValueError("Key and IV must be 32 bytes")
     if len(data) % 16:
         raise ValueError("data length must be a multiple of 16 bytes")
-    return bytes(_Native.nativeIgeEncrypt(data, key, iv))
+    return _as_bytes(_Native.nativeIgeEncrypt(data, key, iv))
 
 
 def ige256_decrypt(data: bytes, key: bytes, iv: bytes) -> bytes:
@@ -20,16 +24,16 @@ def ige256_decrypt(data: bytes, key: bytes, iv: bytes) -> bytes:
         raise ValueError("Key and IV must be 32 bytes")
     if len(data) % 16:
         raise ValueError("data length must be a multiple of 16 bytes")
-    return bytes(_Native.nativeIgeDecrypt(data, key, iv))
+    return _as_bytes(_Native.nativeIgeDecrypt(data, key, iv))
 
 
 def _ctr(data, key, iv, state):
     if len(key) != 32 or len(iv) != 16 or len(state) != 1:
         raise ValueError("Invalid key, IV, or state length")
     result = _Native.nativeCtr(data, key, iv, state)
-    encrypted = bytes(result[0])
-    iv[:] = bytes(result[1])
-    state[:] = bytes(result[2])
+    encrypted = _as_bytes(result[0])
+    iv[:] = _as_bytes(result[1])
+    state[:] = _as_bytes(result[2])
     return encrypted
 
 
@@ -83,14 +87,14 @@ def kdf(auth_key: bytes, msg_key: bytes, outgoing: bool):
     if len(auth_key) != 256 or len(msg_key) != 16:
         raise ValueError("Invalid auth_key or msg_key length")
     result = _Native.nativeKdf(auth_key, msg_key, outgoing)
-    return bytes(result[0]), bytes(result[1])
+    return _as_bytes(result[0]), _as_bytes(result[1])
 
 
 def pack_message(msg_id: int, seq_no: int, body: bytes, salt: int,
                  session_id: bytes, auth_key: bytes, auth_key_id: bytes) -> bytes:
     if len(session_id) != 8 or len(auth_key) != 256 or len(auth_key_id) != 8:
         raise ValueError("Invalid session or authentication key length")
-    return bytes(_Native.nativePackMessage(
+    return _as_bytes(_Native.nativePackMessage(
         msg_id, seq_no, body, salt, session_id, auth_key, auth_key_id
     ))
 
@@ -98,7 +102,7 @@ def pack_message(msg_id: int, seq_no: int, body: bytes, salt: int,
 def unpack_message(packed: bytes, session_id: bytes, auth_key: bytes, auth_key_id: bytes, incoming: bool = True):
     if len(session_id) != 8 or len(auth_key) != 256 or len(auth_key_id) != 8:
         raise ValueError("Invalid session or authentication key length")
-    encoded = bytes(_Native.nativeUnpackMessage(packed, session_id, auth_key, auth_key_id, incoming))
+    encoded = _as_bytes(_Native.nativeUnpackMessage(packed, session_id, auth_key, auth_key_id, incoming))
     if len(encoded) < 16:
         raise ValueError("Invalid native unpack result")
     msg_id, seq_no, length = struct.unpack_from("<qiI", encoded, 0)
