@@ -1,0 +1,19 @@
+package:
+  name: WarpCrypto
+  version: "2.2.0"
+
+source:
+  git_url: https://github.com/rjriajul/WarpCrypto.git
+  git_rev: d6adf6fd4d02b5881d8d6c5538c33444c23f5109
+
+build:
+  number: 1
+
+requirements:
+  build:
+    - rust
+  host:
+    - python
+
+about:
+  license_file: LICENSE
