@@ -15,7 +15,7 @@ import threading
 import time
 from pathlib import Path
 
-from com.soebb.gogram import Gogram
+from com.soebb.gogram.gogram import Gogram
 
 try:
     import yt_dlp
