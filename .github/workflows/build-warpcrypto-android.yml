@@ -60,7 +60,7 @@ jobs:
         working-directory: ${{ runner.temp }}/chaquopy
         run: |
           test -d "$ANDROID_NDK_HOME"
-          target/download-target.sh maven/com/chaquo/python/target/3.11.17-1
+          target/download-target.sh maven/com/chaquo/python/target/3.11.14-0
 
       - name: Build WarpCrypto wheel
         working-directory: ${{ runner.temp }}/chaquopy/server/pypi
