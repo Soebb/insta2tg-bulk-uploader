@@ -1,8 +1,8 @@
 """Telethon HTTPS-only transport for Telegram data centers.
 
-This experimental adapter uses Telegram Web's HTTPS MTProto endpoint (/apiw1)
-while keeping Telethon's existing HTTP framing unchanged. Only the request path
-is varied in this experiment.
+This experimental adapter uses Telegram Web's HTTPS MTProto endpoint (/apiw1).
+It keeps Telethon's HTTP framing but uses the binary content type used by
+working /apiw1 clients.
 """
 import asyncio
 import logging
@@ -11,6 +11,7 @@ from telethon.network import ConnectionHttp
 from telethon.network.connection.http import HttpPacketCodec
 
 TELEGRAM_HTTPS_PATH = "/apiw1"
+TELEGRAM_CONTENT_TYPE = b"Content-Type: application/octet-stream\r\n"
 
 DC_HOSTS = {
     1: "pluto.web.telegram.org",
@@ -22,19 +23,31 @@ DC_HOSTS = {
 
 
 class TelegramHttpsPacketCodec(HttpPacketCodec):
-    """Use Telegram Web's HTTPS path and retain response diagnostics."""
+    """Use Telegram Web's HTTPS path and binary request content type."""
 
     def encode_packet(self, data):
         packet = super().encode_packet(data)
         original_request_line = b"POST /api HTTP/1.1\r\n"
+        original_content_type = (
+            b"Content-Type: application/x-www-form-urlencoded\r\n"
+        )
         if not packet.startswith(original_request_line):
             raise RuntimeError(
                 "Unexpected Telethon HTTP packet format; refusing to send "
                 "a request with an unverified HTTPS path."
             )
-        return (
+        if packet.count(original_content_type) != 1:
+            raise RuntimeError(
+                "Unexpected Telethon HTTP headers; refusing to send a request "
+                "without the verified binary content type."
+            )
+
+        packet = (
             b"POST " + TELEGRAM_HTTPS_PATH.encode("ascii") + b" HTTP/1.1\r\n"
             + packet[len(original_request_line):]
+        )
+        return packet.replace(
+            original_content_type, TELEGRAM_CONTENT_TYPE, 1
         )
 
     async def read_packet(self, reader):
