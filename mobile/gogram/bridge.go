@@ -100,7 +100,6 @@ func SendMedia(path, caption, chatID string, forceDocument bool) string {
 	options := &telegram.MediaOptions{
 		Caption: caption,
 		ForceDocument: forceDocument,
-		Progress: progressLogger(filepath.Base(path)),
 	}
 	if _, err := current.SendMedia(chatID, path, options); err != nil {
 		return writeError("Gogram upload failed for %s: %v", filepath.Base(path), err)
@@ -126,7 +125,6 @@ func SendAlbum(pathsJSON, caption, chatID string) string {
 	}
 	options := &telegram.MediaOptions{
 		Caption: caption,
-		Progress: progressLogger("album"),
 	}
 	if _, err := current.SendAlbum(chatID, paths, options); err != nil {
 		return writeError("Gogram album upload failed: %v", err)
@@ -153,25 +151,6 @@ func Close() string {
 		_ = file.Close()
 	}
 	return "Gogram client closed"
-}
-
-func progressLogger(label string) func(int, int) {
-	var progressMu sync.Mutex
-	lastPercent := -5
-	return func(totalBytes, currentBytes int) {
-		if totalBytes <= 0 {
-			return
-		}
-		percent := currentBytes * 100 / totalBytes
-		progressMu.Lock()
-		defer progressMu.Unlock()
-		if percent < lastPercent+5 && currentBytes < totalBytes {
-			return
-		}
-		lastPercent = percent
-		log.Printf("Gogram MTProto upload %s: %d%% (%.1f/%.1f MB).",
-			label, percent, float64(currentBytes)/1048576, float64(totalBytes)/1048576)
-	}
 }
 
 func stringSetting(settings map[string]interface{}, key string) string {
