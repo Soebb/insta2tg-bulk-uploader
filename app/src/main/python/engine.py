@@ -21,7 +21,7 @@ from pathlib import Path
 import telethon
 from telethon import TelegramClient
 from telethon.sessions import StringSession
-from telegram_https import DC_HOSTS, TelegramHttpsConnection
+from telegram_https import TelegramHttpsConnection
 
 try:
     import yt_dlp
