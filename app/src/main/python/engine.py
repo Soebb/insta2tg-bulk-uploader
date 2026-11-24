@@ -20,6 +20,7 @@ from pathlib import Path
 
 import telethon
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 from telegram_https import DC_HOSTS, TelegramHttpsConnection
 
 try:
@@ -258,8 +259,11 @@ def send_telethon(item, caption, chat_id, force_document=False):
             # upload-only client its own connection implementation. Telegram
             # associates the uploaded InputFile with this auth key, so the
             # regular client can submit that InputFile after this client closes.
+            # Use a separate in-memory session object containing the same
+            # auth key. This avoids two clients sharing/closing one SQLite session.
+            upload_session = StringSession(StringSession.save(client.session))
             upload_client = TelegramClient(
-                client.session,
+                upload_session,
                 int(api_id),
                 api_hash,
                 connection=TelegramHttpsConnection,
