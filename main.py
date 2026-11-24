@@ -1,6 +1,5 @@
 import asyncio
 import hashlib
-import json
 import logging
 import os
 import shutil
@@ -8,12 +7,11 @@ import sqlite3
 import time
 from pathlib import Path
 
-import aiohttp
 import yt_dlp
 from dotenv import load_dotenv
-from pyrogram import Client, filters
-from pyrogram.types import InputMediaPhoto, InputMediaVideo
-from pyrogram.errors import FloodWait
+from wzgram import Client, filters
+from wzgram.types import InputMediaPhoto, InputMediaVideo
+from wzgram.errors import FloodWait
 
 ROOT = Path(__file__).resolve().parent
 os.chdir(ROOT)
@@ -28,7 +26,6 @@ BACKUP_CHAT_ID = int(os.getenv("BACKUP_CHAT_ID", str(OWNER_ID)) or 0)
 INPUT_FILE = Path(os.getenv("INPUT_FILE", "links.txt"))
 DOWNLOAD_DIR = Path(os.getenv("DOWNLOAD_DIR", "downloads"))
 DATABASE_FILE = Path(os.getenv("DATABASE_FILE", "progress.sqlite3"))
-DIRECT_URL_UPLOAD = os.getenv("DIRECT_URL_UPLOAD", "true").lower() in {"1", "true", "yes", "on"}
 REQUEST_DELAY = float(os.getenv("REQUEST_DELAY", "2"))
 
 if not BOT_TOKEN or not API_ID or not API_HASH or not TARGET_CHAT_ID:
@@ -41,7 +38,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(), logging.FileHandler("downloader.log", encoding="utf-8")],
 )
 log = logging.getLogger("instagram-bulk")
-app = Client("instagram_bulk_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client("instagram_bulk_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, sleep_threshold=60, max_concurrent_transmissions=1)
 run_lock = asyncio.Lock()
 pause_event = asyncio.Event()
 pause_event.set()
@@ -216,34 +213,6 @@ def caption_for(index, url, description):
     return f"{index}\n{url}\n\n{description or ''}".strip()[:1024]
 
 
-async def send_direct(items, caption):
-    media = []
-    for i, item in enumerate(items):
-        obj = {"type": "video" if item["is_video"] else "photo", "media": item["url"]}
-        if i == 0 and caption:
-            obj["caption"] = caption
-        media.append(obj)
-    if len(media) == 1:
-        kind = media[0]["type"]
-        method = "sendVideo" if kind == "video" else "sendPhoto"
-        payload = {"chat_id": TARGET_CHAT_ID, kind: media[0]["media"]}
-        if caption:
-            payload["caption"] = caption
-    else:
-        method = "sendMediaGroup"
-        payload = {"chat_id": TARGET_CHAT_ID, "media": json.dumps(media)}
-    timeout = aiohttp.ClientTimeout(total=100, connect=20)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(f"https://api.telegram.org/bot{BOT_TOKEN}/{method}", json=payload) as response:
-            data = await response.json(content_type=None)
-            if response.status != 200 or not data.get("ok"):
-                wait = (data.get("parameters") or {}).get("retry_after")
-                if wait:
-                    raise FloodWait(int(wait))
-                raise RuntimeError(data.get("description", f"Telegram HTTP {response.status}"))
-            return data.get("result")
-
-
 async def download_post(url, key):
     folder = DOWNLOAD_DIR / key
     folder.mkdir(parents=True, exist_ok=True)
@@ -282,9 +251,15 @@ async def send_local(items, paths, caption):
     if len(items) != len(paths):
         raise RuntimeError(f"Media/file count mismatch: {len(items)} vs {len(paths)}")
     if len(paths) == 1:
+        progress = make_upload_progress(paths[0].name)
         if items[0]["is_video"]:
-            return await app.send_video(TARGET_CHAT_ID, str(paths[0]), caption=caption, supports_streaming=True)
-        return await app.send_photo(TARGET_CHAT_ID, str(paths[0]), caption=caption)
+            return await app.send_video(
+                TARGET_CHAT_ID, str(paths[0]), caption=caption,
+                supports_streaming=True, progress=progress
+            )
+        return await app.send_photo(
+            TARGET_CHAT_ID, str(paths[0]), caption=caption, progress=progress
+        )
     group = []
     for i, (item, path) in enumerate(zip(items, paths)):
         cap = caption if i == 0 else None
@@ -292,7 +267,22 @@ async def send_local(items, paths, caption):
             group.append(InputMediaVideo(str(path), caption=cap, supports_streaming=True))
         else:
             group.append(InputMediaPhoto(str(path), caption=cap))
-    return await app.send_media_group(TARGET_CHAT_ID, group)
+    return await app.send_media_group(
+        TARGET_CHAT_ID, group, progress=make_upload_progress("album")
+    )
+
+
+def make_upload_progress(label):
+    last = [-5]
+    async def progress(current, total):
+        if not total:
+            return
+        percent = int(current * 100 / total)
+        if percent >= last[0] + 5 or current >= total:
+            last[0] = percent
+            log.info("Wzgram upload %s: %d%% (%.1f/%.1f MB).",
+                     label, percent, current / 1048576, total / 1048576)
+    return progress
 
 
 async def process_one(conn, index, total, url):
@@ -317,31 +307,24 @@ async def process_one(conn, index, total, url):
         conn.commit()
         return
 
-    local_files = None
-    for number, part, sig in work:
-        await pause_event.wait()
-        chunk_caption = caption if number == 0 else ""
-        direct_ok = False
-        if DIRECT_URL_UPLOAD and all(x["url"] and (x["size"] is None or x["size"] <= (20 if x["is_video"] else 5) * 1024 * 1024) for x in part):
-            try:
-                await send_direct(part, chunk_caption)
-                direct_ok = True
-                log.info("Chunk %d sent via Telegram URL fetch.", number + 1)
-            except FloodWait as exc:
-                log.warning("Telegram FloodWait: %s seconds", exc.value)
-                await asyncio.sleep(exc.value + 1)
-            except Exception as exc:
-                log.warning("Direct URL send failed; local fallback: %s", exc)
-        if not direct_ok:
-            if local_files is None:
-                local_files = await download_post(url, key)
-            # The extractor returns carousel entries in their original order.
+    local_files = await download_post(url, key)
+    try:
+        for number, part, sig in work:
+            await pause_event.wait()
+            chunk_caption = caption if number == 0 else ""
             start = number * 10
             selected = local_files[start:start + len(part)]
             await send_local(part, selected, chunk_caption)
-            log.info("Chunk %d uploaded from local files.", number + 1)
-        set_chunk(conn, url, number, sig)
-        await asyncio.sleep(REQUEST_DELAY)
+            log.info("Chunk %d uploaded through Wzgram MTProto.", number + 1)
+            set_chunk(conn, url, number, sig)
+            await asyncio.sleep(REQUEST_DELAY)
+    finally:
+        for path in local_files:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                log.warning("Could not delete temporary file %s", path)
+        shutil.rmtree(DOWNLOAD_DIR / key, ignore_errors=True)
 
     conn.execute("UPDATE posts SET status='done',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE url=?", (url,))
     conn.commit()
