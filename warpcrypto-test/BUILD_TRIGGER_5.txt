@@ -1,0 +1,1 @@
+Trigger after handling sdkmanager license pipe closure.
