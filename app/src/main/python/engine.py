@@ -145,13 +145,30 @@ async def send_single(client, item, caption, chat_id, force_document=False):
     }
     LOG.info("Uploading %s through Wzgram MTProto (%.1f MB).",
              path.name, size / 1048576.0)
-    if item.get("is_video") and not force_document:
-        return await client.send_video(
-            video=str(path), supports_streaming=True, **common
+    send_started = time.monotonic()
+    try:
+        if item.get("is_video") and not force_document:
+            LOG.info("Calling Telegram send_video after file upload.")
+            result = await client.send_video(
+                video=str(path), supports_streaming=True, **common
+            )
+        elif not force_document:
+            LOG.info("Calling Telegram send_photo after file upload.")
+            result = await client.send_photo(photo=str(path), **common)
+        else:
+            LOG.info("Calling Telegram send_document after file upload.")
+            result = await client.send_document(document=str(path), **common)
+        LOG.info(
+            "Telegram message send completed for %s in %.1f seconds.",
+            path.name, time.monotonic() - send_started
         )
-    if not force_document:
-        return await client.send_photo(photo=str(path), **common)
-    return await client.send_document(document=str(path), **common)
+        return result
+    except Exception:
+        LOG.exception(
+            "Telegram message send failed for %s after %.1f seconds (file-part upload may already have reached 100%%).",
+            path.name, time.monotonic() - send_started
+        )
+        raise
 
 
 async def send_album(client, files, caption, chat_id):
@@ -416,10 +433,10 @@ def start(files_dir, settings_json):
             # media-session workers. These bot-specific knobs are an experiment:
             # increase the media-session pool moderately without changing the
             # main queue's one-file-at-a-time behavior.
-            os.environ.setdefault("WZGRAM_UPLOAD_POOL_BOT", "12")
-            os.environ.setdefault("WZGRAM_UPLOAD_RATE_BOT", "48")
+            os.environ.setdefault("WZGRAM_UPLOAD_POOL_BOT", "20")
+            os.environ.setdefault("WZGRAM_UPLOAD_RATE_BOT", "300")
             LOG.info(
-                "Wzgram upload tuning: bot pool=%s, part rate=%s parts/s.",
+                "Wzgram upload tuning: bot pool=%s (max), part rate=%s parts/s (aggressive test).",
                 os.environ["WZGRAM_UPLOAD_POOL_BOT"],
                 os.environ["WZGRAM_UPLOAD_RATE_BOT"],
             )
