@@ -1,0 +1,71 @@
+name: Test WarpCrypto on Android
+
+on:
+  push:
+    branches: [warpcrypto-device-test]
+    paths:
+      - "warpcrypto-test/**"
+      - ".github/workflows/test-warpcrypto-android.yml"
+  workflow_dispatch:
+    inputs:
+      wheel_run_id:
+        description: "Successful GitHub Actions run ID which contains the WarpCrypto wheel"
+        required: true
+        default: "45340620380"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-test-apk:
+    name: Build WarpCrypto Android test APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download the successful Android wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: warpcrypto-android-arm64-cp311
+          path: warpcrypto-test/wheels
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.wheel_run_id || '45340620380' }}
+          github-token: ${{ github.token }}
+
+      - name: Verify wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -lah warpcrypto-test/wheels
+          test -f warpcrypto-test/wheels/warpcrypto-2.2.0-1-cp311-cp311-android_24_arm64_v8a.whl
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/gradle-build-action@v3
+        with:
+          gradle-version: "8.13"
+
+      - name: Build debug APK
+        run: gradle -p warpcrypto-test --no-daemon assembleDebug
+
+      - name: Upload test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: warpcrypto-android-test-apk
+          path: warpcrypto-test/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
