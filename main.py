@@ -11,7 +11,6 @@ from downloader import download_post, flatten, inspect_post, make_items
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError
-from telethon.network import ConnectionHttp
 
 from telegram_https import DC_HOSTS, TelegramHttpsConnection
 
@@ -66,6 +65,7 @@ upload_app = TelegramClient(
     API_ID,
     API_HASH,
     connection=TelegramHttpsConnection,
+    receive_updates=False,
     request_retries=5,
     connection_retries=5,
     retry_delay=2,
