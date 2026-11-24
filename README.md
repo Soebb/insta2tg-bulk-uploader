@@ -1,5 +1,7 @@
 # Instagram Bulk Downloader
 
+> Android note: on the `gogram-android-transfers` branch, the Android app uses the Go-based Gogram MTProto bridge built as an AAR with gomobile. The Windows/server Python runner in this repository remains unchanged and continues to use its existing Wzgram dependency.
+
 Telegram downloader bot for public Instagram posts. It reads Instagram URLs from `links.txt`, downloads the media locally with yt-dlp, then uploads every media file to Telegram using **Wzgram over MTProto**.
 
 ## What it does
