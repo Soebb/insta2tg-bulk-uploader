@@ -1,5 +1,5 @@
 package:
-  name: WarpCrypto
+  name: warpcrypto
   version: "2.2.0"
 
 source:
