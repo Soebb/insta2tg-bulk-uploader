@@ -53,7 +53,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y patchelf
           python -m pip install --upgrade pip
-          git clone --depth 1 https://github.com/chaquo/chaquopy.git "$RUNNER_TEMP/chaquopy"
+          git clone --branch 17.1.0 --depth 1 https://github.com/chaquo/chaquopy.git "$RUNNER_TEMP/chaquopy"
+          test "$(git -C "$RUNNER_TEMP/chaquopy" describe --tags --exact-match)" = "17.1.0"
+          echo "Using official Chaquopy GitHub release: $(git -C "$RUNNER_TEMP/chaquopy" rev-parse HEAD)"
           python -m pip install -r "$RUNNER_TEMP/chaquopy/server/pypi/requirements.txt"
 
       - name: Download matching Chaquopy Python runtime
