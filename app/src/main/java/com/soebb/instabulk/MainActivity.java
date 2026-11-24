@@ -93,7 +93,7 @@ public class MainActivity extends Activity {
         title.setPadding(0, 0, 0, dp(16));
         root.addView(title);
 
-        botToken = field(root, "BOT_TOKEN (Wzgram MTProto bot auth)", true);
+        botToken = field(root, "BOT_TOKEN (Gogram MTProto bot auth)", true);
         apiId = field(root, "API_ID", false);
         apiHash = field(root, "API_HASH", true);
         targetChat = field(root, "TARGET_CHAT_ID (ex: @my_chnl)", false);
@@ -265,7 +265,7 @@ public class MainActivity extends Activity {
         String hash = apiHash.getText().toString().trim();
         String chat = targetChat.getText().toString().trim();
         if (token.isEmpty() || id.isEmpty() || hash.isEmpty() || chat.isEmpty()) {
-            toast("Wzgram BOT_TOKEN, API_ID, API_HASH and TARGET_CHAT_ID are required");
+            toast("Gogram BOT_TOKEN, API_ID, API_HASH and TARGET_CHAT_ID are required");
             return false;
         }
         try { Integer.parseInt(id); } catch (NumberFormatException e) {
