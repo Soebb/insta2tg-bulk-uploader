@@ -60,7 +60,7 @@ class TelegramHttpPacketCodec(HttpPacketCodec):
         try:
             status_line = await reader.readline()
             LOG.info(
-                "HTTPS codec request #%d: received status line (%d bytes): %r",
+                "HTTPS codec response #%d: received status line (%d bytes): %r",
                 response_id, len(status_line), status_line[:512],
             )
             if not status_line.endswith(b"\n"):
@@ -111,7 +111,7 @@ class TelegramHttpPacketCodec(HttpPacketCodec):
 
             reason = status_parts[2] if len(status_parts) > 2 else ""
             LOG.info(
-                "HTTPS codec request #%d: HTTP status=%d reason=%r; parsed %d headers: %s",
+                "HTTPS codec response #%d: HTTP status=%d reason=%r; parsed %d headers: %s",
                 response_id, status_code, reason, header_count,
                 "; ".join("%s=%r" % pair for pair in sorted(headers.items())) or "(none)",
             )
@@ -165,12 +165,12 @@ class TelegramHttpPacketCodec(HttpPacketCodec):
                 ) from exc
 
             LOG.info(
-                "HTTPS codec request #%d: reading exactly %d response body bytes.",
+                "HTTPS codec response #%d: reading exactly %d response body bytes.",
                 response_id, length,
             )
             body = await reader.readexactly(length)
             LOG.info(
-                "HTTPS codec request #%d: response body received successfully (%d bytes).",
+                "HTTPS codec response #%d: response body received successfully (%d bytes).",
                 response_id, len(body),
             )
             return body
