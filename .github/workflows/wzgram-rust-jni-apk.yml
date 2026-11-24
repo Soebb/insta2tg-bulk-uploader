@@ -16,6 +16,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: wzgram-rust-jni-{{ github.ref }
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
