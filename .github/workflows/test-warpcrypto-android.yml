@@ -59,6 +59,11 @@ jobs:
           test -d "$SDK_ROOT/platforms/android-35"
           test -d "$SDK_ROOT/build-tools/35.0.0"
 
+      - name: Set up Python 3.11 for Chaquopy
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Set up Gradle
         uses: gradle/gradle-build-action@v3
         with:
