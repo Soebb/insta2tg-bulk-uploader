@@ -212,7 +212,7 @@ def telegram_request(method, fields=None, files=None):
 
 BOT_API_UPLOAD_LIMIT = 50_000_000
 BOT_API_PHOTO_LIMIT = 10_000_000
-TELETHON_VIDEO_THRESHOLD = 20 * 1024 * 1024
+TELETHON_VIDEO_THRESHOLD = BOT_API_UPLOAD_LIMIT
 MTProto_BOT_UPLOAD_LIMIT = 2_000_000_000
 
 
@@ -300,10 +300,10 @@ def send_telethon(item, caption, chat_id, force_document=False):
 def send_single(item, caption, chat_id, force_document=False):
     size = item["path"].stat().st_size
     is_video = item["is_video"]
-    # Route larger videos directly through MTProto. On slow/mobile VPN paths,
-    # avoid spending time on repeated Bot API uploads that are likely to break.
+    # Keep videos within the official Bot API limit on the fast direct HTTPS
+    # multipart path. Only larger videos need the MTProto/Telethon uploader.
     if is_video and size > TELETHON_VIDEO_THRESHOLD:
-        LOG.info("Video exceeds the 20 MiB direct-upload threshold; using Telethon HTTPS MTProto.")
+        LOG.info("Video exceeds the 50 MB Bot API limit; using Telethon HTTPS MTProto.")
         return send_telethon(item, caption, chat_id, force_document=force_document)
     if size > BOT_API_UPLOAD_LIMIT:
         return send_telethon(item, caption, chat_id, force_document=force_document)
