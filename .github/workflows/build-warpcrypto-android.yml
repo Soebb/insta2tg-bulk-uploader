@@ -91,7 +91,7 @@ jobs:
           else:
               raise SystemExit("Could not locate the exact Chaquopy SONAME link block")
 
-          path.write_text("\\n".join(lines) + "\\n")
+          path.write_text("\n".join(lines) + "\n")
           print("Patched duplicate Python SONAME handling.")
           PY
 
