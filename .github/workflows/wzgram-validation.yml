@@ -1,33 +1,71 @@
-name: Wzgram Python validation
+name: Gogram Android bridge
 
 on:
   push:
-    branches: [wzgram-all-transfers]
+    branches: [gogram-android-transfers]
   pull_request:
-    branches: [wzgram-all-transfers]
+    branches: [gogram-android-transfers]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  validate:
+  build-gogram-aar:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          python-version: "3.11"
-          cache: pip
-      - name: Install desktop dependencies
-        run: python -m pip install -r requirements.txt
-      - name: Compile Python sources
-        run: python -m compileall -q main.py app/src/main/python/engine.py
-      - name: Verify Wzgram imports
+          go-version: "1.25.x"
+          cache: true
+          cache-dependency-path: mobile/gogram/go.sum
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK and NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager "ndk;27.2.12479018"
+
+      - name: Install gomobile tools
         run: |
-          python - <<'PY'
-          from wzgram import Client, filters
-          from wzgram.types import InputMediaPhoto, InputMediaVideo
-          from wzgram.errors import FloodWait
-          print("Wzgram Client, filters, media types and FloodWait imports are available.")
-          PY
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Resolve Go dependencies
+        working-directory: mobile/gogram
+        run: go mod tidy
+
+      - name: Test Go bridge
+        working-directory: mobile/gogram
+        run: go test ./...
+
+      - name: Initialize gomobile
+        run: gomobile init
+
+      - name: Build Android AAR
+        working-directory: mobile/gogram
+        run: |
+          mkdir -p ../../app/libs
+          gomobile bind -v -target=android/arm,android/arm64 -androidapi 24 \
+            -javapkg com.soebb.gogram -o ../../app/libs/gogram.aar .
+
+      - name: Validate Python engine syntax
+        run: python -m compileall -q app/src/main/python/engine.py
+
+      - name: Upload Gogram AAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: gogram-android-aar
+          path: app/libs/gogram.aar
+          if-no-files-found: error
