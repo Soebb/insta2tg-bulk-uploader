@@ -73,28 +73,25 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          import re
 
           path = Path("server/pypi/build-wheel.py")
-          source = path.read_text()
-          pattern = re.compile(
-              r'(?m)^(?P<indent>[ \\t]*)if link_filename != filename:\\n'
-              r'[ \\t]*run\\(f"ln -s \\{filename\\} \\{reqs_lib_dir\\}/\\{link_filename\\}"\\)$'
-          )
-
-          def replace_link(match):
-              indent = match.group("indent")
-              return (
-                  f"{indent}if (link_filename != filename\\n"
-                  f"{indent}        and not exists(join(reqs_lib_dir, link_filename))\\n"
-                  f"{indent}        and not islink(join(reqs_lib_dir, link_filename))):\\n"
-                  f"{indent}    run(f"ln -s {{filename}} {{reqs_lib_dir}}/{{link_filename}}")"
-              )
-
-          patched, count = pattern.subn(replace_link, source, count=1)
-          if count != 1:
+          lines = path.read_text().splitlines()
+          for i, line in enumerate(lines[:-1]):
+              if (line.strip() == "if link_filename != filename:"
+                      and lines[i + 1].strip() ==
+                      'run(f"ln -s {filename} {reqs_lib_dir}/{link_filename}")'):
+                  indent = line[:len(line) - len(line.lstrip())]
+                  lines[i:i + 2] = [
+                      indent + "if (link_filename != filename",
+                      indent + "        and not exists(join(reqs_lib_dir, link_filename))",
+                      indent + "        and not islink(join(reqs_lib_dir, link_filename))):",
+                      indent + '    run(f"ln -s {filename} {reqs_lib_dir}/{link_filename}")',
+                  ]
+                  break
+          else:
               raise SystemExit("Could not locate the exact Chaquopy SONAME link block")
-          path.write_text(patched)
+
+          path.write_text("\\n".join(lines) + "\\n")
           print("Patched duplicate Python SONAME handling.")
           PY
 
