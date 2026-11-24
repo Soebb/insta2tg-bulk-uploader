@@ -11,7 +11,7 @@ import asyncio
 import logging
 import socket
 
-from telethon.network.connection import ConnectionHttp
+from telethon.network import ConnectionHttp
 from telethon.network.connection.http import HttpPacketCodec
 
 LOG = logging.getLogger("instagram_bulk_android")
