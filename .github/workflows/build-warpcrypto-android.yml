@@ -1,0 +1,88 @@
+name: Build WarpCrypto Android wheel
+
+on:
+  push:
+    branches: [warpcrypto-android]
+    paths:
+      - "android-wheels/warpcrypto/**"
+      - ".github/workflows/build-warpcrypto-android.yml"
+  pull_request:
+    branches: [warpcrypto-android]
+    paths:
+      - "android-wheels/warpcrypto/**"
+      - ".github/workflows/build-warpcrypto-android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-arm64:
+    name: WarpCrypto for Android arm64-v8a (Chaquopy Python 3.11)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Set up Android SDK and NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager "ndk;27.2.12479018"
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf
+          python -m pip install --upgrade pip
+          git clone --depth 1 https://github.com/chaquo/chaquopy.git "$RUNNER_TEMP/chaquopy"
+          python -m pip install -r "$RUNNER_TEMP/chaquopy/server/pypi/requirements.txt"
+
+      - name: Download matching Chaquopy Python runtime
+        working-directory: ${{ runner.temp }}/chaquopy
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+        run: |
+          target/download-target.sh maven/com/chaquo/python/target/3.11.17-1
+
+      - name: Build WarpCrypto wheel
+        working-directory: ${{ runner.temp }}/chaquopy/server/pypi
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+        run: |
+          python build-wheel.py --verbose --python 3.11 --abi arm64-v8a --api-level 24 "$GITHUB_WORKSPACE/android-wheels/warpcrypto"
+
+      - name: Verify Android wheel and ELF architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel=$(find "$RUNNER_TEMP/chaquopy/server/pypi/dist/warpcrypto" -maxdepth 1 -name '*.whl' -print -quit)
+          test -n "$wheel"
+          echo "Built: $wheel"
+          unzip -p "$wheel" '*/WHEEL'
+          mkdir -p "$RUNNER_TEMP/wheel-check"
+          python -m zipfile -e "$wheel" "$RUNNER_TEMP/wheel-check"
+          so=$(find "$RUNNER_TEMP/wheel-check" -type f -name 'warpcrypto*.so' -print -quit)
+          test -n "$so"
+          readelf -h "$so" | grep -E 'Class:|Machine:'
+          readelf -h "$so" | grep -q 'AArch64'
+
+      - name: Upload Android wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: warpcrypto-android-arm64-cp311
+          path: ${{ runner.temp }}/chaquopy/server/pypi/dist/warpcrypto/*.whl
+          if-no-files-found: error
+          retention-days: 14
