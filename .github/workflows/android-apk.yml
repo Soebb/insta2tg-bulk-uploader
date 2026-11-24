@@ -54,10 +54,14 @@ jobs:
             grep -q "connection=TelegramHttpsConnection" app/src/main/python/engine.py
             grep -q "await client.send_file(" app/src/main/python/engine.py
             grep -q "await upload_client.upload_file(" app/src/main/python/engine.py
+            # The HTTPS client must use Telethon's standard HTTP codec over TLS.
+            grep -q "from telethon.network import ConnectionHttp" app/src/main/python/telegram_https.py
+            grep -q "class TelegramHttpsConnection(ConnectionHttp)" app/src/main/python/telegram_https.py
+            grep -q "super().__init__(" app/src/main/python/telegram_https.py
+            grep -q "web.telegram.org:443/api" app/src/main/python/telegram_https.py
           else
             grep -q "connection=TelegramHttpsConnection" app/src/main/python/engine.py
           fi
-          grep -q 'TELEGRAM_HTTPS_PATH = "/apiw1"' app/src/main/python/telegram_https.py
           grep -q "part_size_kb = 512" app/src/main/python/engine.py
           grep -q "TELETHON_VIDEO_THRESHOLD = BOT_API_UPLOAD_LIMIT" app/src/main/python/engine.py
           if grep -Eiq "kurigram|pyrogram" app/src/main/python/engine.py app/build.gradle; then
