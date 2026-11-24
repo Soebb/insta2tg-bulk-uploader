@@ -1,5 +1,5 @@
 name: Android Debug APK
-# Includes the Telethon MTProto HTTPS upload branch.
+# Includes the experimental Telegram Web HTTPS /apiw1 transport branch.
 
 on:
   push:
@@ -7,6 +7,7 @@ on:
       - telethon-https-migration
       - telethon-https-upload-isolated
       - telethon-https-auth-diagnostics
+      - telethon-apiw1-test
   workflow_dispatch:
 
 permissions:
@@ -42,10 +43,11 @@ jobs:
 
       - name: Verify target branch and Android transport
         run: |
-          test "$GITHUB_REF" = "refs/heads/telethon-https-migration" -o "$GITHUB_REF" = "refs/heads/telethon-https-upload-isolated" -o "$GITHUB_REF" = "refs/heads/telethon-https-auth-diagnostics"
+          test "$GITHUB_REF" = "refs/heads/telethon-https-migration" -o "$GITHUB_REF" = "refs/heads/telethon-https-upload-isolated" -o "$GITHUB_REF" = "refs/heads/telethon-https-auth-diagnostics" -o "$GITHUB_REF" = "refs/heads/telethon-apiw1-test"
           echo "Building commit: $(git rev-parse HEAD)"
           grep -q "from telethon import TelegramClient" app/src/main/python/engine.py
           grep -q "connection=TelegramHttpsConnection" app/src/main/python/engine.py
+          grep -q 'TELEGRAM_HTTPS_PATH = "/apiw1"' app/src/main/python/telegram_https.py
           grep -q "part_size_kb = 512" app/src/main/python/engine.py
           grep -q "TELETHON_VIDEO_THRESHOLD = BOT_API_UPLOAD_LIMIT" app/src/main/python/engine.py
           if grep -Eiq "kurigram|pyrogram" app/src/main/python/engine.py app/build.gradle; then
