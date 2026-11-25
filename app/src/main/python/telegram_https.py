@@ -8,16 +8,27 @@ This subclass only validates and parses the HTTP response before exposing its
 body to the MTProto layer.
 """
 import asyncio
+import hashlib
+import itertools
 import logging
 import socket
+from collections import deque
 
 from telethon.network import ConnectionHttp
 from telethon.network.connection.http import HttpPacketCodec
 
 LOG = logging.getLogger("instagram_bulk_android")
 
-# Telegram documents the "-1" hostname variant for increasing the
-# simultaneous-request limit. Keep this isolated to the HTTPS upload transport.
+# Process-wide IDs let us correlate packets across Telethon reconnects.
+_REQUEST_IDS = itertools.count(1)
+_HOST_VARIANT_COUNTERS = {}
+
+# Telegram documents both the standard DC hostname and the "-1" variant.
+# Each reconnect tests one combination, in order:
+#   1) -1 hostname + Host with :443
+#   2) -1 hostname + Host without port
+#   3) standard hostname + Host with :443
+#   4) standard hostname + Host without port
 DC_HOSTS = {
     1: "pluto-1.web.telegram.org",
     2: "venus-1.web.telegram.org",
@@ -32,13 +43,22 @@ class TelegramHttpPacketCodec(HttpPacketCodec):
 
     def __init__(self, connection):
         super().__init__(connection)
-        self._diagnostic_request_id = 0
-        self._diagnostic_response_id = 0
+        self._pending_request_ids = deque()
 
     def encode_packet(self, data):
-        self._diagnostic_request_id += 1
-        request_id = self._diagnostic_request_id
+        request_id = next(_REQUEST_IDS)
+        self._pending_request_ids.append(request_id)
         packet = super().encode_packet(data)
+        if getattr(self._conn, "_omit_host_port", False):
+            header, separator, body = packet.partition(b"\\r\\n\\r\\n")
+            if separator:
+                lines = header.split(b"\\r\\n")
+                host = ("Host: " + self._conn._ip).encode("ascii")
+                lines = [
+                    host if line.lower().startswith(b"host:") else line
+                    for line in lines
+                ]
+                packet = b"\\r\\n".join(lines) + separator + body
         # Log only the clear-text HTTP headers. The MTProto payload is encrypted
         # and must never be written to the application log.
         header_block = packet.split(b"\r\n\r\n", 1)[0]
@@ -56,13 +76,19 @@ class TelegramHttpPacketCodec(HttpPacketCodec):
         return packet
 
     async def read_packet(self, reader):
-        self._diagnostic_response_id += 1
-        response_id = self._diagnostic_response_id
-        LOG.info("HTTPS codec response #%d: waiting for HTTP status line.", response_id)
+        response_id = (
+            self._pending_request_ids.popleft()
+            if self._pending_request_ids
+            else next(_REQUEST_IDS)
+        )
+        LOG.info(
+            "HTTPS codec response for request #%d: waiting for HTTP status line.",
+            response_id,
+        )
         try:
             status_line = await reader.readline()
             LOG.info(
-                "HTTPS codec response #%d: received status line (%d bytes): %r",
+                "HTTPS codec response for request #%d: received status line (%d bytes): %r",
                 response_id, len(status_line), status_line[:512],
             )
             if not status_line.endswith(b"\n"):
@@ -113,7 +139,7 @@ class TelegramHttpPacketCodec(HttpPacketCodec):
 
             reason = status_parts[2] if len(status_parts) > 2 else ""
             LOG.info(
-                "HTTPS codec response #%d: HTTP status=%d reason=%r; parsed %d headers: %s",
+                "HTTPS codec response for request #%d: HTTP status=%d reason=%r; parsed %d headers: %s",
                 response_id, status_code, reason, header_count,
                 "; ".join("%s=%r" % pair for pair in sorted(headers.items())) or "(none)",
             )
@@ -131,13 +157,13 @@ class TelegramHttpPacketCodec(HttpPacketCodec):
                             error_body = await reader.readexactly(error_size)
                     except Exception:
                         LOG.exception(
-                            "HTTPS codec response #%d: could not read HTTP error body.",
+                            "HTTPS codec response for request #%d: could not read HTTP error body.",
                             response_id,
                         )
                         raise
                 if error_body:
                     LOG.warning(
-                        "HTTPS codec response #%d: HTTP error body preview (%d bytes): %r",
+                        "HTTPS codec response for request #%d: HTTP error body preview (%d bytes): %r",
                         response_id, len(error_body), error_body[:2048],
                     )
                 raise ConnectionError(
@@ -167,18 +193,18 @@ class TelegramHttpPacketCodec(HttpPacketCodec):
                 ) from exc
 
             LOG.info(
-                "HTTPS codec response #%d: reading exactly %d response body bytes.",
+                "HTTPS codec response for request #%d: reading exactly %d response body bytes.",
                 response_id, length,
             )
             body = await reader.readexactly(length)
             LOG.info(
-                "HTTPS codec response #%d: response body received successfully (%d bytes).",
+                "HTTPS codec response for request #%d: response body received successfully (%d bytes).",
                 response_id, len(body),
             )
             return body
         except Exception:
             LOG.exception(
-                "HTTPS codec response #%d: failed while reading/parsing HTTP response.",
+                "HTTPS codec response for request #%d: failed while reading/parsing HTTP response.",
                 response_id,
             )
             raise
@@ -204,8 +230,11 @@ class TelegramHttpsConnection(ConnectionHttp):
                 f"HTTPS transport has no official hostname for Telegram DC {dc_id}; "
                 "refusing to fall back to a raw IP/TCP connection."
             )
+        self._diagnostic_dc_id = dc_id
+        self._base_host = host
         LOG.info(
-            "Telegram HTTPS upload connection selected: dc_id=%s hostname=%s port=443.",
+            "Telegram HTTPS upload connection selected: dc_id=%s initial_hostname=%s port=443; "
+            "diagnostic host matrix enabled.",
             dc_id,
             host,
         )
@@ -219,9 +248,30 @@ class TelegramHttpsConnection(ConnectionHttp):
         )
 
     async def connect(self, timeout=None, ssl=None):
-        # TelegramClient passes its connection timeout here. Keep a finite
-        # fallback in case this connection is ever used directly.
+        # Rotate one diagnostic variant on every reconnect. This tests the
+        # official -1 and standard DC hostnames, with and without :443 in Host.
         timeout = timeout or 30
+        standard_host = self._base_host.replace("-1.web.telegram.org", ".web.telegram.org")
+        variants = (
+            (self._base_host, False, "port-443"),
+            (self._base_host, True, "no-port"),
+            (standard_host, False, "port-443"),
+            (standard_host, True, "no-port"),
+        )
+        counter = _HOST_VARIANT_COUNTERS.setdefault(
+            self._diagnostic_dc_id, itertools.count()
+        )
+        variant_number = next(counter) % len(variants)
+        host, omit_host_port, host_header_mode = variants[variant_number]
+        self._ip = host
+        self._omit_host_port = omit_host_port
+        LOG.info(
+            "Telegram HTTPS diagnostic variant %d/4: dc_id=%s hostname=%s Host-header=%s.",
+            variant_number + 1,
+            self._diagnostic_dc_id,
+            host,
+            host_header_mode,
+        )
         LOG.info(
             "Telegram HTTPS transport: resolving %s:%s (timeout=%ss).",
             self._ip,
@@ -264,8 +314,50 @@ class TelegramHttpsConnection(ConnectionHttp):
                 self._port,
             )
             raise
+        writer = getattr(self, "_writer", None)
+        peer = None
+        ssl_object = None
+        if writer is not None:
+            try:
+                peer = writer.get_extra_info("peername")
+                ssl_object = writer.get_extra_info("ssl_object")
+            except Exception:
+                LOG.exception("Telegram HTTPS transport: could not inspect TLS connection metadata.")
+
+        if ssl_object is not None:
+            try:
+                certificate_der = ssl_object.getpeercert(binary_form=True)
+                certificate_info = ssl_object.getpeercert() or {}
+                certificate_sha256 = (
+                    hashlib.sha256(certificate_der).hexdigest()
+                    if certificate_der else None
+                )
+                dns_names = [
+                    value for kind, value in certificate_info.get("subjectAltName", ())
+                    if kind == "DNS"
+                ]
+                LOG.info(
+                    "Telegram HTTPS TLS details: peer=%s; version=%s; cipher=%s; "
+                    "certificate_sha256=%s; subject=%s; issuer=%s; dns_names=%s.",
+                    peer,
+                    ssl_object.version(),
+                    ssl_object.cipher(),
+                    certificate_sha256,
+                    certificate_info.get("subject"),
+                    certificate_info.get("issuer"),
+                    dns_names[:30],
+                )
+            except Exception:
+                LOG.exception("Telegram HTTPS transport: could not read peer certificate details.")
+        else:
+            LOG.warning(
+                "Telegram HTTPS transport: TLS connected but ssl_object metadata is unavailable; peer=%s.",
+                peer,
+            )
+
         LOG.info(
-            "Telegram HTTPS transport: TLS connection established to %s:%s.",
+            "Telegram HTTPS transport: TLS connection established to %s:%s; peer=%s.",
             self._ip,
             self._port,
+            peer,
         )
