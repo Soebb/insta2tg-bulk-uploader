@@ -146,6 +146,9 @@ export default {
     if (!responseHeaders.has("content-type")) {
       responseHeaders.set("content-type", "video/mp4");
     }
+    if (!responseHeaders.has("content-disposition")) {
+      responseHeaders.set("content-disposition", 'inline; filename="instagram-video.mp4"');
+    }
     responseHeaders.set("cache-control", "private, no-store");
     responseHeaders.set("x-content-type-options", "nosniff");
 
