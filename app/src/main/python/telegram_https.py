@@ -16,12 +16,14 @@ from telethon.network.connection.http import HttpPacketCodec
 
 LOG = logging.getLogger("instagram_bulk_android")
 
+# Telegram documents the "-1" hostname variant for increasing the
+# simultaneous-request limit. Keep this isolated to the HTTPS upload transport.
 DC_HOSTS = {
-    1: "pluto.web.telegram.org",
-    2: "venus.web.telegram.org",
-    3: "aurora.web.telegram.org",
-    4: "vesta.web.telegram.org",
-    5: "flora.web.telegram.org",
+    1: "pluto-1.web.telegram.org",
+    2: "venus-1.web.telegram.org",
+    3: "aurora-1.web.telegram.org",
+    4: "vesta-1.web.telegram.org",
+    5: "flora-1.web.telegram.org",
 }
 
 
@@ -202,6 +204,11 @@ class TelegramHttpsConnection(ConnectionHttp):
                 f"HTTPS transport has no official hostname for Telegram DC {dc_id}; "
                 "refusing to fall back to a raw IP/TCP connection."
             )
+        LOG.info(
+            "Telegram HTTPS upload connection selected: dc_id=%s hostname=%s port=443.",
+            dc_id,
+            host,
+        )
         super().__init__(
             host,
             443,
