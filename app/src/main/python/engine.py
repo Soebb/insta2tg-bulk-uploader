@@ -11,6 +11,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import os
 import shutil
+import socket
 import sqlite3
 import threading
 import time
@@ -88,10 +89,39 @@ def db_open():
 
 
 def telegram_request(method, fields=None, files=None):
-    """Stream multipart uploads to Telegram without buffering whole media files in RAM."""
+    """Stream multipart uploads to Telegram and log safe HTTP/API diagnostics."""
     token = CONFIG["BOT_TOKEN"]
     fields = fields or {}
     files = files or {}
+    request_id = "%s-%s" % (time.strftime("%H%M%S"), time.time_ns() % 1_000_000_000)
+    endpoint_host = "api.telegram.org"
+    endpoint_path = "/bot<redacted>/%s" % method
+    file_details = []
+    for key, file_path in files.items():
+        path = Path(file_path)
+        if not path.is_file():
+            raise FileNotFoundError("Upload file does not exist: %s" % path.name)
+        file_details.append((key, path, path.stat().st_size))
+
+    LOG.info(
+        "Bot API request #%s stage 1/7: preparing HTTPS POST host=%s path=%s; fields=%s; files=%s.",
+        request_id, endpoint_host, endpoint_path,
+        sorted(fields.keys()),
+        [{"field": key, "name": path.name, "size_bytes": size}
+         for key, path, size in file_details],
+    )
+    try:
+        addresses = sorted({
+            result[4][0] for result in socket.getaddrinfo(
+                endpoint_host, 443, type=socket.SOCK_STREAM
+            )
+        })
+        LOG.info("Bot API request #%s stage 2/7: DNS %s resolved to %s.",
+                 request_id, endpoint_host, addresses)
+    except Exception as exc:
+        LOG.warning("Bot API request #%s stage 2/7: DNS lookup diagnostic failed (%s).",
+                    request_id, type(exc).__name__)
+
     boundary = "----AndroidBulkBoundary" + hashlib.sha1(
         ("%s-%s" % (time.time_ns(), threading.get_ident())).encode()
     ).hexdigest()
@@ -107,10 +137,7 @@ def telegram_request(method, fields=None, files=None):
         field_parts.append(part)
 
     file_parts = []
-    for key, file_path in files.items():
-        path = Path(file_path)
-        if not path.is_file():
-            raise FileNotFoundError("Upload file does not exist: %s" % path.name)
+    for key, path, _size in file_details:
         header = (
             b"--" + boundary_bytes + b"\r\n"
             + ('Content-Disposition: form-data; name="%s"; filename="%s"\r\n' %
@@ -122,25 +149,45 @@ def telegram_request(method, fields=None, files=None):
     content_length = sum(map(len, field_parts)) + len(closing)
     content_length += sum(len(header) + path.stat().st_size + 2 for header, path in file_parts)
     total_bytes = content_length
+    LOG.info(
+        "Bot API request #%s stage 3/7: multipart request prepared; content_length=%d bytes; "
+        "file_count=%d; file_bytes=%d.",
+        request_id, content_length, len(file_parts),
+        sum(size for _key, _path, size in file_details),
+    )
 
     for attempt in range(1, 4):
         connection = None
         sent_bytes = 0
+        request_started = time.monotonic()
         try:
-            # Use a bounded timeout while transmitting the body, then allow
-            # Telegram much longer to return the API response on slow mobile networks.
-            connection = http.client.HTTPSConnection("api.telegram.org", timeout=180)
+            LOG.info("Bot API request #%s stage 4/7: opening TLS connection (attempt %d/3).",
+                     request_id, attempt)
+            connection = http.client.HTTPSConnection(endpoint_host, timeout=180)
             connection.putrequest("POST", "/bot%s/%s" % (token, method))
             connection.putheader("Content-Type", "multipart/form-data; boundary=%s" % boundary)
             connection.putheader("Content-Length", str(content_length))
             connection.putheader("Connection", "close")
             connection.endheaders()
+            tls_elapsed = time.monotonic() - request_started
+            peer = None
+            if connection.sock is not None:
+                try:
+                    peer = connection.sock.getpeername()
+                except OSError:
+                    pass
+            LOG.info(
+                "Bot API request #%s stage 5/7: TLS connected; peer=%s; "
+                "request headers sent; elapsed=%.3fs.",
+                request_id, peer, tls_elapsed,
+            )
 
             def send_piece(data):
                 nonlocal sent_bytes
                 connection.send(data)
                 sent_bytes += len(data)
 
+            body_started = time.monotonic()
             for part in field_parts:
                 send_piece(part)
             for header, path in file_parts:
@@ -153,24 +200,78 @@ def telegram_request(method, fields=None, files=None):
                         send_piece(chunk)
                 send_piece(b"\r\n")
             send_piece(closing)
+            body_elapsed = time.monotonic() - body_started
+            LOG.info(
+                "Bot API request #%s stage 6/7: request body transmitted; sent=%d/%d bytes; "
+                "upload_time=%.3fs; average_rate=%.1f KiB/s.",
+                request_id, sent_bytes, total_bytes, body_elapsed,
+                (sent_bytes / 1024.0 / body_elapsed) if body_elapsed > 0 else 0.0,
+            )
 
             if connection.sock is not None:
-                # Uploads can finish while the Bot API/network path is still
-                # processing the media. The old 240s socket timeout caused
-                # false-negative delivery results on slower connections.
                 connection.sock.settimeout(900)
-                LOG.info("Upload body sent (%d bytes); waiting up to 15 minutes for Telegram's response.",
-                         sent_bytes)
+                LOG.info(
+                    "Bot API request #%s: waiting up to 900 seconds for the HTTP/API response.",
+                    request_id,
+                )
             response = connection.getresponse()
             raw = response.read()
+            response_elapsed = time.monotonic() - request_started
+            response_headers = {
+                key.lower(): value for key, value in response.getheaders()
+                if key.lower() in ("content-type", "content-length", "date", "server",
+                                   "connection", "retry-after")
+            }
+            LOG.info(
+                "Bot API request #%s stage 7/7: HTTP response received; status=%s reason=%r; "
+                "headers=%s; body_bytes=%d; total_elapsed=%.3fs.",
+                request_id, response.status, response.reason,
+                response_headers, len(raw), response_elapsed,
+            )
             try:
                 payload = json.loads(raw.decode("utf-8", "replace"))
             except Exception:
-                payload = {"ok": False, "description": "Telegram returned an unreadable response: %s" %
-                           raw[:500].decode("utf-8", "replace")}
+                preview = raw[:500].decode("utf-8", "replace")
+                LOG.warning(
+                    "Bot API request #%s: response was not valid JSON; safe body preview=%r.",
+                    request_id, preview,
+                )
+                payload = {"ok": False, "description":
+                           "Telegram returned an unreadable response: %s" % preview}
+
+            result = payload.get("result")
+            result_summary = None
+            if isinstance(result, dict):
+                result_summary = {
+                    "type": "object",
+                    "keys": sorted(result.keys()),
+                    "message_id": result.get("message_id"),
+                    "date": result.get("date"),
+                }
+                for media_key in ("video", "document", "photo", "audio", "animation"):
+                    media_value = result.get(media_key)
+                    if isinstance(media_value, dict):
+                        result_summary[media_key] = {
+                            key: media_value.get(key)
+                            for key in ("file_size", "width", "height", "duration")
+                            if media_value.get(key) is not None
+                        }
+                        break
+            elif isinstance(result, list):
+                result_summary = {"type": "list", "items": len(result)}
+            elif result is not None:
+                result_summary = {"type": type(result).__name__}
+            LOG.info(
+                "Bot API request #%s: parsed Telegram JSON; ok=%r; error_code=%r; "
+                "description=%r; parameters=%s; result_summary=%s.",
+                request_id, payload.get("ok"), payload.get("error_code"),
+                payload.get("description"), payload.get("parameters"),
+                result_summary,
+            )
+
             if response.status >= 500 and attempt < 3:
-                LOG.warning("Telegram returned HTTP %s for %s (attempt %d/3); retrying.",
-                            response.status, method, attempt)
+                LOG.warning("Bot API request #%s: HTTP %s for %s; retrying attempt %d/3.",
+                            request_id, response.status, method, attempt + 1)
                 time.sleep(attempt * 3)
                 continue
             if response.status >= 400:
@@ -180,17 +281,24 @@ def telegram_request(method, fields=None, files=None):
                 params = payload.get("parameters") or {}
                 if params.get("retry_after") and attempt < 3:
                     delay = min(int(params["retry_after"]), 30)
-                    LOG.warning("Telegram rate limit for %s; retrying after %d seconds.",
-                                method, delay)
+                    LOG.warning(
+                        "Bot API request #%s: Telegram rate limit; retry_after=%s; "
+                        "retrying in %d seconds.",
+                        request_id, params.get("retry_after"), delay,
+                    )
                     time.sleep(delay)
                     continue
                 raise RuntimeError("Telegram API: " + str(payload.get("description", payload)))
+            LOG.info("Bot API request #%s completed successfully.", request_id)
             return payload.get("result")
         except (http.client.RemoteDisconnected, http.client.IncompleteRead,
                 TimeoutError, OSError, http.client.HTTPException) as exc:
-            # If the complete request body was transmitted, Telegram may already
-            # have accepted it even though its response was lost. Do not resend
-            # automatically in that ambiguous case, to avoid duplicate posts.
+            LOG.exception(
+                "Bot API request #%s transport exception on attempt %d/3 "
+                "(sent=%d/%d bytes, elapsed=%.3fs).",
+                request_id, attempt, sent_bytes, total_bytes,
+                time.monotonic() - request_started,
+            )
             if sent_bytes >= total_bytes:
                 raise RuntimeError(
                     "Telegram did not return a response after all %d upload bytes were sent "
@@ -203,14 +311,16 @@ def telegram_request(method, fields=None, files=None):
                     "sent %d of %d bytes. Check network stability and try again."
                     % (type(exc).__name__, sent_bytes, total_bytes)
                 ) from exc
-            LOG.warning("Telegram connection interrupted during %s (attempt %d/3, %d/%d bytes); retrying.",
-                        method, attempt, sent_bytes, total_bytes)
+            LOG.warning(
+                "Bot API request #%s: connection interrupted during %s "
+                "(attempt %d/3, %d/%d bytes); retrying.",
+                request_id, method, attempt, sent_bytes, total_bytes,
+            )
             time.sleep(attempt * 3)
         finally:
             if connection is not None:
                 connection.close()
     raise RuntimeError("Telegram upload failed after retries.")
-
 
 BOT_API_UPLOAD_LIMIT = 50_000_000
 BOT_API_PHOTO_LIMIT = 10_000_000
