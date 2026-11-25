@@ -261,12 +261,17 @@ def telegram_request(method, fields=None, files=None):
                 result_summary = {"type": "list", "items": len(result)}
             elif result is not None:
                 result_summary = {"type": type(result).__name__}
+            api_parameters = payload.get("parameters") or {}
+            safe_parameters = {
+                key: api_parameters[key]
+                for key in ("retry_after", "migrate_to_chat_id")
+                if key in api_parameters and key != "migrate_to_chat_id"
+            }
             LOG.info(
                 "Bot API request #%s: parsed Telegram JSON; ok=%r; error_code=%r; "
-                "description=%r; parameters=%s; result_summary=%s.",
+                "description=%r; safe_parameters=%s; result_summary=%s.",
                 request_id, payload.get("ok"), payload.get("error_code"),
-                payload.get("description"), payload.get("parameters"),
-                result_summary,
+                payload.get("description"), safe_parameters, result_summary,
             )
 
             if response.status >= 500 and attempt < 3:
@@ -496,6 +501,11 @@ def send_single(item, caption, chat_id, force_document=False):
     use_document = force_document or (not is_video and size > BOT_API_PHOTO_LIMIT)
     method = "sendDocument" if use_document else ("sendVideo" if is_video else "sendPhoto")
     key = "document" if use_document else ("video" if is_video else "photo")
+    LOG.info(
+        "Bot API route selected: method=%s; media_type=%s; file=%s; size=%.2f MB; "
+        "destination_id=<redacted>.",
+        method, key, item["path"].name, size / 1048576.0,
+    )
     fields = {"chat_id": chat_id}
     if caption:
         fields["caption"] = caption[:1024]
