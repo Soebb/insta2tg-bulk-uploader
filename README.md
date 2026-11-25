@@ -1,6 +1,6 @@
-# Instagram Bulk Downloader
+# insta2tg bulk uploader
 
-Telegram downloader bot for public Instagram posts. It reads Instagram URLs from `links.txt`, downloads the media locally with yt-dlp, then uploads every media file to Telegram using **Wzgram over MTProto**.
+Telegram download & upload bot for public Instagram posts. It reads Instagram URLs from `links.txt`, downloads the media locally with yt-dlp, then uploads every media file to Telegram using **Wzgram over MTProto**.
 
 ## What it does
 
