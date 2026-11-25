@@ -341,6 +341,50 @@ def item_size(item):
     return item["path"].stat().st_size
 
 
+def probe_remote_size(url, headers=None):
+    """Determine remote size with HEAD, then a one-byte Range request; never fetch the full file."""
+    request_headers = {"Accept-Encoding": "identity"}
+    request_headers.update(headers or {})
+    for method, extra_headers in (
+        ("HEAD", {}),
+        ("GET", {"Range": "bytes=0-0"}),
+    ):
+        req = urllib.request.Request(url, headers=dict(request_headers, **extra_headers), method=method)
+        response = None
+        try:
+            response = urllib.request.urlopen(req, timeout=20)
+            status = getattr(response, "status", None) or response.getcode()
+            content_range = response.headers.get("Content-Range", "")
+            content_length = response.headers.get("Content-Length", "")
+            total = None
+            if "/" in content_range:
+                candidate = content_range.rsplit("/", 1)[1].strip()
+                if candidate.isdigit():
+                    total = int(candidate)
+            if total is None and content_length.isdigit():
+                total = int(content_length)
+            LOG.info(
+                "CDN size probe: method=%s; status=%s; content_length=%s; "
+                "content_range=%s; total_bytes=%s.",
+                method, status, content_length or "<missing>",
+                content_range or "<missing>", total if total is not None else "<unknown>",
+            )
+            if method == "GET":
+                # A compliant server returns one byte (206); close immediately regardless.
+                response.read(1)
+            if total:
+                return total
+        except Exception as exc:
+            LOG.info("CDN size probe: method=%s failed (%s).", method, type(exc).__name__)
+        finally:
+            if response is not None:
+                try:
+                    response.close()
+                except Exception:
+                    pass
+    return 0
+
+
 def extract_large_remote_file(url):
     """Extract one large media URL without downloading its bytes to the phone."""
     options = {
@@ -387,8 +431,15 @@ def extract_large_remote_file(url):
     if not direct_url or not direct_url.startswith(("https://", "http://")):
         LOG.info("CDN URL test skipped: extractor did not provide an HTTP(S) media URL.")
         return None
+    extractor_headers = selected.get("http_headers") or entry.get("http_headers") or {}
+    if size <= 0:
+        LOG.info("CDN URL size is missing from yt-dlp metadata; probing CDN headers without downloading the file.")
+        size = probe_remote_size(direct_url, extractor_headers)
+    if size <= 0:
+        LOG.info("CDN URL test skipped: size could not be determined using metadata, HEAD, or a one-byte Range request.")
+        return None
     if size <= BOT_API_UPLOAD_LIMIT:
-        LOG.info("CDN URL test skipped: reported size is %.2f MB.", size / 1048576.0)
+        LOG.info("CDN URL test skipped: measured size is %.2f MB.", size / 1048576.0)
         return None
 
     parsed = urlsplit(direct_url)
@@ -399,7 +450,7 @@ def extract_large_remote_file(url):
         LOG.info("CDN URL test skipped: large media is not identified as a video.")
         return None
 
-    header_names = sorted((selected.get("http_headers") or entry.get("http_headers") or {}).keys())
+    header_names = sorted(extractor_headers.keys())
     LOG.info(
         "CDN URL test: extracted direct media URL without downloading; host=%s; "
         "size=%.2f MB; ext=%s; extractor_headers=%s.",
