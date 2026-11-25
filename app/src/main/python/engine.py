@@ -262,8 +262,14 @@ def send_telethon(item, caption, chat_id, force_document=False):
             client.session.save()
             LOG.info("MTProto stage 4/9: starting/authenticating the regular Telethon client.")
             await client.start(bot_token=CONFIG["BOT_TOKEN"])
-            LOG.info("MTProto stage 4/9 complete: regular client authenticated (authorized=%s).",
-                     await client.is_user_authorized())
+            LOG.info(
+                "MTProto stage 4/9 complete: regular client authenticated "
+                "(authorized=%s, session_dc_id=%s, server=%s:%s).",
+                await client.is_user_authorized(),
+                getattr(client.session, "dc_id", None),
+                getattr(client.session, "server_address", None),
+                getattr(client.session, "port", None),
+            )
 
             # Reuse the exact same authorized session/auth key, but give the
             # upload-only client its own connection implementation. Telegram
@@ -273,7 +279,13 @@ def send_telethon(item, caption, chat_id, force_document=False):
             # auth key. This avoids two clients sharing/closing one SQLite session.
             LOG.info("MTProto stage 5/9: copying the authorized session into an isolated in-memory session.")
             upload_session = StringSession(StringSession.save(client.session))
-            LOG.info("MTProto stage 5/9 complete: isolated session created.")
+            LOG.info(
+                "MTProto stage 5/9 complete: isolated session created "
+                "(upload_session_dc_id=%s, server=%s:%s).",
+                getattr(upload_session, "dc_id", None),
+                getattr(upload_session, "server_address", None),
+                getattr(upload_session, "port", None),
+            )
             upload_client = TelegramClient(
                 upload_session,
                 int(api_id),
