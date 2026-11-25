@@ -9,6 +9,7 @@ on:
       - telethon-https-auth-diagnostics
       - telethon-apiw1-test
       - telethon-upload-only-https
+      - telethon-cdn-url-upload-test
   workflow_dispatch:
 
 permissions:
@@ -44,7 +45,7 @@ jobs:
 
       - name: Verify target branch and Android transport
         run: |
-          test "$GITHUB_REF" = "refs/heads/telethon-https-migration" -o "$GITHUB_REF" = "refs/heads/telethon-https-upload-isolated" -o "$GITHUB_REF" = "refs/heads/telethon-https-auth-diagnostics" -o "$GITHUB_REF" = "refs/heads/telethon-apiw1-test" -o "$GITHUB_REF" = "refs/heads/telethon-upload-only-https"
+          test "$GITHUB_REF" = "refs/heads/telethon-https-migration" -o "$GITHUB_REF" = "refs/heads/telethon-https-upload-isolated" -o "$GITHUB_REF" = "refs/heads/telethon-https-auth-diagnostics" -o "$GITHUB_REF" = "refs/heads/telethon-apiw1-test" -o "$GITHUB_REF" = "refs/heads/telethon-upload-only-https" -o "$GITHUB_REF" = "refs/heads/telethon-cdn-url-upload-test"
           echo "Building commit: $(git rev-parse HEAD)"
           grep -q "from telethon import TelegramClient" app/src/main/python/engine.py
           if [ "$GITHUB_REF" = "refs/heads/telethon-upload-only-https" ]; then
@@ -64,6 +65,11 @@ jobs:
           fi
           grep -q "part_size_kb = 512" app/src/main/python/engine.py
           grep -q "TELETHON_VIDEO_THRESHOLD = BOT_API_UPLOAD_LIMIT" app/src/main/python/engine.py
+          if [ "$GITHUB_REF" = "refs/heads/telethon-cdn-url-upload-test" ]; then
+            grep -q "extract_info(url, download=False)" app/src/main/python/engine.py
+            grep -q "client.send_file(" app/src/main/python/engine.py
+            grep -q "Telegram will fetch the media from the CDN" app/src/main/python/engine.py
+          fi
           if grep -Eiq "kurigram|pyrogram" app/src/main/python/engine.py app/build.gradle; then
             echo "Legacy Kurigram/Pyrogram dependency detected; refusing to build."
             exit 1
