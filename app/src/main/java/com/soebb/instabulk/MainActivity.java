@@ -47,7 +47,7 @@ public class MainActivity extends Activity {
             handler.postDelayed(this, 1200);
         }
     };
-    private EditText botToken, apiId, apiHash, targetChat, ownerId, backupChat;
+    private EditText botToken, apiId, apiHash, targetChat, ownerId, backupChat, cdnProxyUrl, cdnProxySecret;
     private TextView linksLabel, statusLabel, logView, databaseView;
     private LogScrollView logScroll;
     private File linksFile, logFile, databaseFile;
@@ -99,6 +99,13 @@ public class MainActivity extends Activity {
         targetChat = field(root, "TARGET_CHAT_ID (ex: @my_chnl)", false);
         ownerId = field(root, "OWNER_ID [optional]", false);
         backupChat = field(root, "BACKUP_CHAT_ID [optional]", false);
+        cdnProxyUrl = field(root, "CDN proxy Worker URL [optional]", false);
+        cdnProxySecret = field(root, "CDN proxy shared secret [optional]", true);
+        TextView proxyHint = new TextView(this);
+        proxyHint.setText("Optional: deploy the Cloudflare Worker from cloudflare/instagram-cdn-relay, then enter its HTTPS /relay URL and the same secret configured as the Worker secret CDN_PROXY_SECRET.");
+        proxyHint.setTextSize(12);
+        proxyHint.setPadding(0, 0, 0, dp(10));
+        root.addView(proxyHint);
 
         Button choose = button("Choose links.txt");
         root.addView(choose);
@@ -277,6 +284,8 @@ public class MainActivity extends Activity {
             .putString("API_HASH", hash).putString("TARGET_CHAT_ID", chat)
             .putString("OWNER_ID", ownerId.getText().toString().trim())
             .putString("BACKUP_CHAT_ID", backupChat.getText().toString().trim())
+            .putString("CDN_PROXY_URL", cdnProxyUrl.getText().toString().trim())
+            .putString("CDN_PROXY_SECRET", cdnProxySecret.getText().toString().trim())
             .apply();
         if (showMessage) toast("Settings saved on this device");
         return true;
@@ -289,6 +298,8 @@ public class MainActivity extends Activity {
         targetChat.setText(prefs.getString("TARGET_CHAT_ID", ""));
         ownerId.setText(prefs.getString("OWNER_ID", ""));
         backupChat.setText(prefs.getString("BACKUP_CHAT_ID", ""));
+        cdnProxyUrl.setText(prefs.getString("CDN_PROXY_URL", ""));
+        cdnProxySecret.setText(prefs.getString("CDN_PROXY_SECRET", ""));
     }
 
     private void sendControl(String action) {
