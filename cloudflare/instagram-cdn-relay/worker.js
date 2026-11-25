@@ -2,7 +2,7 @@
  * Authenticated streaming relay for Instagram CDN media.
  *
  * Required Worker secret: CDN_PROXY_SECRET (minimum 32 characters).
- * Android signs: HMAC-SHA256(secret, "<expiry>\\n<source-url>").
+ * Android signs: HMAC-SHA256(secret, "<expiry>\n<source-url>").
  *
  * Supported endpoints:
  *   GET  /health
@@ -31,7 +31,7 @@ function allowedInstagramCdn(url) {
   return url.protocol === "https:" &&
     url.username === "" && url.password === "" &&
     url.port === "" &&
-    /^scontent[a-z0-9-]*\\.cdninstagram\\.com$/i.test(url.hostname);
+    /^scontent[a-z0-9-]*\.cdninstagram\.com$/i.test(url.hostname);
 }
 
 async function validSignature(secret, expiry, sourceUrl, suppliedHex) {
@@ -48,7 +48,7 @@ async function validSignature(secret, expiry, sourceUrl, suppliedHex) {
     "HMAC",
     key,
     signature,
-    encoder.encode(expiry + "\\n" + sourceUrl),
+    encoder.encode(expiry + "\n" + sourceUrl),
   );
 }
 
@@ -69,7 +69,7 @@ export default {
     const source = incoming.searchParams.get("u") || "";
     const expiry = incoming.searchParams.get("e") || "";
     const signature = incoming.searchParams.get("s") || "";
-    if (!source || !/^\\d{10}$/.test(expiry) || !signature) {
+    if (!source || !/^\d{10}$/.test(expiry) || !signature) {
       return new Response("Missing or invalid signed URL parameters", { status: 400 });
     }
 
