@@ -10,6 +10,7 @@ on:
       - telethon-apiw1-test
       - telethon-upload-only-https
       - telethon-cdn-url-upload-test
+      - telethon-cdn-proxy-test
   workflow_dispatch:
 
 permissions:
@@ -45,7 +46,7 @@ jobs:
 
       - name: Verify target branch and Android transport
         run: |
-          test "$GITHUB_REF" = "refs/heads/telethon-https-migration" -o "$GITHUB_REF" = "refs/heads/telethon-https-upload-isolated" -o "$GITHUB_REF" = "refs/heads/telethon-https-auth-diagnostics" -o "$GITHUB_REF" = "refs/heads/telethon-apiw1-test" -o "$GITHUB_REF" = "refs/heads/telethon-upload-only-https" -o "$GITHUB_REF" = "refs/heads/telethon-cdn-url-upload-test"
+          test "$GITHUB_REF" = "refs/heads/telethon-https-migration" -o "$GITHUB_REF" = "refs/heads/telethon-https-upload-isolated" -o "$GITHUB_REF" = "refs/heads/telethon-https-auth-diagnostics" -o "$GITHUB_REF" = "refs/heads/telethon-apiw1-test" -o "$GITHUB_REF" = "refs/heads/telethon-upload-only-https" -o "$GITHUB_REF" = "refs/heads/telethon-cdn-url-upload-test" -o "$GITHUB_REF" = "refs/heads/telethon-cdn-proxy-test"
           echo "Building commit: $(git rev-parse HEAD)"
           grep -q "from telethon import TelegramClient" app/src/main/python/engine.py
           if [ "$GITHUB_REF" = "refs/heads/telethon-upload-only-https" ]; then
@@ -69,6 +70,12 @@ jobs:
             grep -q "extract_info(url, download=False)" app/src/main/python/engine.py
             grep -q "client.send_file(" app/src/main/python/engine.py
             grep -q "Telegram will fetch the media from the CDN" app/src/main/python/engine.py
+          fi
+          if [ "$GITHUB_REF" = "refs/heads/telethon-cdn-proxy-test" ]; then
+            grep -q "build_signed_cdn_proxy_url" app/src/main/python/engine.py
+            grep -q "CDN_PROXY_SECRET" app/src/main/python/engine.py
+            grep -q "proxy_url," app/src/main/python/engine.py
+            test -f cloudflare/instagram-cdn-relay/worker.js
           fi
           if grep -Eiq "kurigram|pyrogram" app/src/main/python/engine.py app/build.gradle; then
             echo "Legacy Kurigram/Pyrogram dependency detected; refusing to build."
