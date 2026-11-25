@@ -77,7 +77,7 @@ public class DownloaderService extends Service {
                     else if (pauseRequested) engine.callAttr("pause");
                     SharedPreferences p = getSharedPreferences("settings", MODE_PRIVATE);
                     JSONObject config = new JSONObject();
-                    for (String key : new String[]{"BOT_TOKEN", "API_ID", "API_HASH", "TARGET_CHAT_ID", "OWNER_ID", "BACKUP_CHAT_ID"}) {
+                    for (String key : new String[]{"BOT_TOKEN", "API_ID", "API_HASH", "TARGET_CHAT_ID", "OWNER_ID", "BACKUP_CHAT_ID", "CDN_PROXY_URL", "CDN_PROXY_SECRET"}) {
                         config.put(key, p.getString(key, ""));
                     }
                     config.put("REQUEST_DELAY", "2");
