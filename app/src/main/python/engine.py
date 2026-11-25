@@ -17,6 +17,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from pathlib import Path
 
 import telethon
@@ -333,6 +334,147 @@ TELETHON_VIDEO_THRESHOLD = BOT_API_UPLOAD_LIMIT
 MTProto_BOT_UPLOAD_LIMIT = 2_000_000_000
 
 
+def item_size(item):
+    """Return a media item's known size for either a local file or a remote URL."""
+    if item.get("size_bytes") is not None:
+        return int(item["size_bytes"])
+    return item["path"].stat().st_size
+
+
+def extract_large_remote_file(url):
+    """Extract one large media URL without downloading its bytes to the phone."""
+    options = {
+        "format": "best[height=360]/best[height=480]/best[height=720]/best[height<=360]/best[height<=480]/best[height<=720]/best",
+        "noplaylist": False, "ignoreerrors": False, "quiet": True, "no_warnings": True,
+        "retries": 3, "extractor_retries": 3, "socket_timeout": 30,
+    }
+    with yt_dlp.YoutubeDL(options) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    if not info:
+        return None
+    entries = info.get("entries") or [info]
+    flattened = []
+    for entry in entries:
+        if not entry:
+            continue
+        if entry.get("entries"):
+            flattened.extend([x for x in entry["entries"] if x])
+        else:
+            flattened.append(entry)
+
+    # Keep this first experiment narrow: one progressive media URL only.
+    # Playlists and split audio/video formats continue through the current downloader.
+    if len(flattened) != 1:
+        LOG.info("CDN URL test skipped: extractor returned %d media items.", len(flattened))
+        return None
+
+    entry = flattened[0]
+    downloads = entry.get("requested_downloads") or []
+    if len(downloads) > 1 or entry.get("requested_formats"):
+        LOG.info("CDN URL test skipped: selected media requires multiple streams.")
+        return None
+    selected = downloads[0] if len(downloads) == 1 else entry
+    direct_url = selected.get("url") or entry.get("url")
+    size = selected.get("filesize") or selected.get("filesize_approx")
+    if not size:
+        size = entry.get("filesize") or entry.get("filesize_approx")
+    try:
+        size = int(size) if size else 0
+    except (TypeError, ValueError):
+        size = 0
+
+    if not direct_url or not direct_url.startswith(("https://", "http://")):
+        LOG.info("CDN URL test skipped: extractor did not provide an HTTP(S) media URL.")
+        return None
+    if size <= BOT_API_UPLOAD_LIMIT:
+        LOG.info("CDN URL test skipped: reported size is %.2f MB.", size / 1048576.0)
+        return None
+
+    parsed = urlsplit(direct_url)
+    ext = (selected.get("ext") or entry.get("ext") or "").lower()
+    media_format = str(selected.get("format") or entry.get("format") or "").lower()
+    is_video = ext in ("mp4", "m4v", "mov", "webm", "mkv") or "video" in media_format
+    if not is_video:
+        LOG.info("CDN URL test skipped: large media is not identified as a video.")
+        return None
+
+    header_names = sorted((selected.get("http_headers") or entry.get("http_headers") or {}).keys())
+    LOG.info(
+        "CDN URL test: extracted direct media URL without downloading; host=%s; "
+        "size=%.2f MB; ext=%s; extractor_headers=%s.",
+        parsed.hostname or "<unknown>", size / 1048576.0, ext or "<unknown>", header_names,
+    )
+    media_id = str(entry.get("id") or hashlib.sha1(direct_url.encode()).hexdigest()[:12])
+    return [{
+        "direct_url": direct_url,
+        "size_bytes": size,
+        "is_video": True,
+        "id": media_id,
+        "name": str(entry.get("title") or media_id),
+    }], (info.get("description") or entry.get("description") or "")
+
+
+def send_telethon_url(item, caption, chat_id):
+    """Ask Telegram to fetch a large media URL; no local upload/custom HTTPS transport."""
+    api_id = str(CONFIG.get("API_ID", "")).strip()
+    api_hash = str(CONFIG.get("API_HASH", "")).strip()
+    if not api_id or not api_hash:
+        raise RuntimeError("API_ID and API_HASH are required for large-file Telethon sends.")
+
+    session_dir = ROOT / "telethon"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    session_path = str(session_dir / "instagram_bulk_bot")
+
+    async def send_remote():
+        LOG.info("CDN URL send stage 1/4: creating the regular Telethon client.")
+        client = TelegramClient(
+            session_path,
+            int(api_id),
+            api_hash,
+            request_retries=5,
+            connection_retries=5,
+            retry_delay=2,
+            auto_reconnect=True,
+            flood_sleep_threshold=60,
+            timeout=30,
+            raise_last_call_error=True,
+        )
+        try:
+            LOG.info("CDN URL send stage 2/4: configuring and authenticating regular MTProto.")
+            client.session.set_dc(2, "149.154.167.51", 443)
+            client.session.save()
+            await client.start(bot_token=CONFIG["BOT_TOKEN"])
+            LOG.info(
+                "CDN URL send stage 2/4 complete: authorized=%s; dc=%s; server=%s:%s.",
+                await client.is_user_authorized(),
+                getattr(client.session, "dc_id", None),
+                getattr(client.session, "server_address", None),
+                getattr(client.session, "port", None),
+            )
+            LOG.info(
+                "CDN URL send stage 3/4: calling send_file with external URL; "
+                "Telegram will fetch the media from the CDN (%.2f MB).",
+                item_size(item) / 1048576.0,
+            )
+            await client.send_file(
+                chat_id,
+                item["direct_url"],
+                caption=(caption or "")[:1024] or None,
+                force_document=False,
+                supports_streaming=True,
+            )
+            LOG.info("CDN URL send stage 4/4 complete: Telegram accepted and sent external media.")
+        finally:
+            LOG.info("CDN URL send cleanup: disconnecting regular Telethon client.")
+            await client.disconnect()
+
+    try:
+        asyncio.run(send_remote())
+    except Exception as exc:
+        raise RuntimeError("Telethon CDN URL send failed (%s): %s" % (type(exc).__name__, exc)) from exc
+
+
 def send_telethon(item, caption, chat_id, force_document=False):
     """Upload large files over HTTPS, then send them over Telethon's normal connection."""
     size = item["path"].stat().st_size
@@ -485,8 +627,15 @@ def send_telethon(item, caption, chat_id, force_document=False):
 
 
 def send_single(item, caption, chat_id, force_document=False):
-    size = item["path"].stat().st_size
+    size = item_size(item)
     is_video = item["is_video"]
+    if item.get("direct_url"):
+        LOG.info(
+            "CDN URL route selected: media_type=video; size=%.2f MB; "
+            "local_download=skipped; transport=Telegram external URL fetch.",
+            size / 1048576.0,
+        )
+        return send_telethon_url(item, caption, chat_id)
     # Keep videos within the official Bot API limit on the fast direct HTTPS
     # multipart path. Only larger videos need the MTProto/Telethon uploader.
     if is_video and size > TELETHON_VIDEO_THRESHOLD:
@@ -527,7 +676,7 @@ def send_album(files, caption, chat_id):
     # Albums with oversized items are sent individually, choosing the transport
     # per file so small files still use the regular Bot API.
     oversized = any(
-        item["path"].stat().st_size >
+        item_size(item) >
         (TELETHON_VIDEO_THRESHOLD if item["is_video"] else BOT_API_PHOTO_LIMIT)
         for item in files
     )
@@ -697,14 +846,30 @@ def run_queue():
             folder = ROOT / "downloads" / key
             try:
                 wait_if_paused()
-                LOG.info("[%d/%d] Extracting and downloading: %s", index, len(links), url)
+                LOG.info("[%d/%d] Extracting media metadata: %s", index, len(links), url)
                 db.execute("""INSERT INTO posts(url,status,attempts) VALUES(?,'processing',1)
                     ON CONFLICT(url) DO UPDATE SET status='processing',attempts=attempts+1,last_error=NULL,
                     updated_at=CURRENT_TIMESTAMP""", (url,))
                 db.commit()
-                media, description = extract_files(url, folder)
+                remote_result = None
+                try:
+                    remote_result = extract_large_remote_file(url)
+                except Exception as metadata_exc:
+                    LOG.warning(
+                        "CDN URL metadata extraction failed (%s); falling back to the existing local downloader.",
+                        type(metadata_exc).__name__,
+                    )
+                if remote_result:
+                    media, description = remote_result
+                    LOG.info(
+                        "[%d/%d] Extracted %d large media URL(s); no media bytes downloaded to the phone.",
+                        index, len(links), len(media),
+                    )
+                else:
+                    LOG.info("[%d/%d] No eligible large direct URL; using the existing yt-dlp download path.", index, len(links))
+                    media, description = extract_files(url, folder)
+                    LOG.info("[%d/%d] Downloaded %d media item(s).", index, len(links), len(media))
                 caption = (url + ("\n\n" + description if description else ""))[:1024]
-                LOG.info("[%d/%d] Downloaded %d media item(s).", index, len(links), len(media))
                 chunks = [media[i:i+10] for i in range(0, len(media), 10)]
                 for chunk_no, chunk in enumerate(chunks):
                     wait_if_paused()
@@ -714,7 +879,7 @@ def run_queue():
                     if sent and sent[0] == sig and sent[1] == "sent":
                         LOG.info("Album %d already sent; skipping.", chunk_no + 1)
                         continue
-                    upload_bytes = sum(item["path"].stat().st_size for item in chunk)
+                    upload_bytes = sum(item_size(item) for item in chunk)
                     LOG.info("[%d/%d] Uploading batch %d/%d: %d file(s), %.1f MB.",
                              index, len(links), chunk_no + 1, len(chunks), len(chunk),
                              upload_bytes / (1024.0 * 1024.0))
