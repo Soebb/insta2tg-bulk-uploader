@@ -43,6 +43,8 @@ jobs:
         run: |
           java -version
           python3.11 --version
+          node --version
+          node --check cloudflare/instagram-cdn-relay/worker.js
 
       - name: Verify target branch and Android transport
         run: |
