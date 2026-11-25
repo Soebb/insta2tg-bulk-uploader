@@ -7,7 +7,7 @@ Telegram download & upload bot for public Instagram posts. It reads Instagram UR
 - Handles single-photo posts, videos/reels and carousel posts through yt-dlp's Instagram extractor.
 - Video selection preference: exact 360p, then exact 480p, then exact 720p. If none exists, it selects the best available height up to 360p, then up to 480p, then up to 720p, then the best remaining format.
 - Preserves carousel order. Telegram allows at most 10 media items per album; carousels larger than 10 are split into consecutive albums.
-- Sends every Telegram media upload through one Wzgram MTProto client. There is no Bot API HTTP upload path, URL-fetch path, size-based transport switch, or Kurigram fallback.
+- Sends every Telegram media upload through one Wzgram MTProto client.
 - Uses Wzgram for Telegram document uploads and downloads too, including database backup delivery and restoring a backup sent to the bot.
 - Stores completed posts and album chunks in SQLite, allowing the queue to resume after a restart.
 - Sends a consistent SQLite database snapshot to the owner's Telegram private chat after every attempted post.
