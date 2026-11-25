@@ -55,6 +55,7 @@ async function validSignature(secret, expiry, sourceUrl, suppliedHex) {
 export default {
   async fetch(request, env) {
     const incoming = new URL(request.url);
+    console.log(JSON.stringify({ event: "request_received", method: request.method, path: incoming.pathname }));
     if (incoming.pathname === "/health" && request.method === "GET") {
       return json({ ok: true, service: "instagram-cdn-relay" });
     }
@@ -86,8 +87,10 @@ export default {
       return new Response("Invalid source URL", { status: 400 });
     }
     if (!allowedInstagramCdn(target)) {
+      console.log(JSON.stringify({ event: "request_rejected", reason: "disallowed_source_host", source_host: target.hostname }));
       return new Response("Source host is not an allowed Instagram CDN host", { status: 403 });
     }
+    console.log(JSON.stringify({ event: "source_validated", source_host: target.hostname, method: request.method }));
 
     let authorized = false;
     try {
@@ -95,7 +98,11 @@ export default {
     } catch (_) {
       authorized = false;
     }
-    if (!authorized) return new Response("Invalid signature", { status: 403 });
+    if (!authorized) {
+      console.log(JSON.stringify({ event: "request_rejected", reason: "invalid_signature", source_host: target.hostname }));
+      return new Response("Invalid signature", { status: 403 });
+    }
+    console.log(JSON.stringify({ event: "signature_valid", source_host: target.hostname }));
 
     const upstreamHeaders = new Headers({
       "accept": "*/*",
@@ -116,9 +123,19 @@ export default {
         headers: upstreamHeaders,
         redirect: "follow",
       });
-    } catch (_) {
+    } catch (error) {
+      console.log(JSON.stringify({ event: "upstream_fetch_failed", source_host: target.hostname, error: String(error) }));
       return new Response("Could not reach Instagram CDN", { status: 502 });
     }
+    console.log(JSON.stringify({
+      event: "upstream_response",
+      source_host: target.hostname,
+      status: upstream.status,
+      content_type: upstream.headers.get("content-type"),
+      content_length: upstream.headers.get("content-length"),
+      content_range: upstream.headers.get("content-range"),
+      final_host: (() => { try { return new URL(upstream.url || target.toString()).hostname; } catch (_) { return "invalid"; } })()
+    }));
 
     // Do not let an upstream redirect turn this endpoint into a general proxy.
     let finalUrl;
@@ -152,6 +169,7 @@ export default {
     responseHeaders.set("cache-control", "private, no-store");
     responseHeaders.set("x-content-type-options", "nosniff");
 
+    console.log(JSON.stringify({ event: "relay_response_returned", status: upstream.status, source_host: target.hostname }));
     return new Response(request.method === "HEAD" ? null : upstream.body, {
       status: upstream.status,
       statusText: upstream.statusText,
