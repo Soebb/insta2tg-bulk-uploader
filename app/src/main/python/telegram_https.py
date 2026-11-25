@@ -50,15 +50,15 @@ class TelegramHttpPacketCodec(HttpPacketCodec):
         self._pending_request_ids.append(request_id)
         packet = super().encode_packet(data)
         if getattr(self._conn, "_omit_host_port", False):
-            header, separator, body = packet.partition(b"\\r\\n\\r\\n")
+            header, separator, body = packet.partition(b"\r\n\r\n")
             if separator:
-                lines = header.split(b"\\r\\n")
+                lines = header.split(b"\r\n")
                 host = ("Host: " + self._conn._ip).encode("ascii")
                 lines = [
                     host if line.lower().startswith(b"host:") else line
                     for line in lines
                 ]
-                packet = b"\\r\\n".join(lines) + separator + body
+                packet = b"\r\n".join(lines) + separator + body
         # Log only the clear-text HTTP headers. The MTProto payload is encrypted
         # and must never be written to the application log.
         header_block = packet.split(b"\r\n\r\n", 1)[0]
