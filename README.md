@@ -72,3 +72,15 @@ Temporary downloaded media is removed after every post attempt, whether it succe
 - If a Telegram request times out after Telegram accepted it, the delivery result may be ambiguous and a duplicate can occur on retry. Exactly-once delivery cannot be guaranteed across a network timeout.
 - Some posts may be unavailable due to privacy, login/age restrictions, deletion, or changes in Instagram's extractor.
 - Keep \`.env\`, \`*.session\`, \`progress.sqlite3\`, \`downloads/\` and \`downloader.log\` private. Do not commit credentials or the input URL list.
+
+
+## Signed Instagram CDN relay experiment (Android branch)
+
+The `telethon-cdn-proxy-test` branch can route Telegram-side external URL fetching through a small Cloudflare Worker. The Worker streams bytes from an Instagram CDN URL using browser-like request headers; the Android app does not download or upload the media bytes.
+
+1. Deploy `cloudflare/instagram-cdn-relay/worker.js` as a Cloudflare Worker.
+2. In the Worker settings, add a secret named `CDN_PROXY_SECRET`. Generate a random secret of at least 32 characters.
+3. In the Android app, set **CDN proxy Worker URL** to the Worker endpoint ending in `/relay`, and set **CDN proxy shared secret** to the exact same value.
+4. Save settings and retry a public Reel link.
+
+The app signs each source URL with HMAC-SHA256 and a 10-minute expiry. The Worker only accepts HTTPS URLs on Instagram CDN hosts and supports HEAD/GET (including Range forwarding). Do not publish the shared secret. The relay is an experiment: Telegram's cURL fetcher may still reject the response, and Instagram may change its CDN requirements. When no Worker URL/secret is configured, the large-URL route stops with a clear configuration error rather than sending an unprotected open-proxy URL.
