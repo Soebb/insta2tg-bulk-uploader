@@ -5,6 +5,7 @@ to downloader.log so the UI can display diagnostics without requiring ADB.
 """
 import asyncio
 import hashlib
+import hmac
 import http.client
 import json
 import logging
@@ -17,7 +18,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 from pathlib import Path
 
 import telethon
@@ -466,12 +467,40 @@ def extract_large_remote_file(url):
     }], (info.get("description") or entry.get("description") or "")
 
 
+def build_signed_cdn_proxy_url(direct_url):
+    """Build a short-lived, HMAC-authenticated Cloudflare Worker relay URL."""
+    endpoint = str(CONFIG.get("CDN_PROXY_URL", "")).strip()
+    secret = str(CONFIG.get("CDN_PROXY_SECRET", "")).strip()
+    if not endpoint or not secret:
+        raise RuntimeError(
+            "Large Instagram URL transfer requires CDN_PROXY_URL and CDN_PROXY_SECRET. "
+            "Deploy cloudflare/instagram-cdn-relay and enter its /relay URL and shared secret in app settings."
+        )
+    parsed = urlsplit(endpoint)
+    if parsed.scheme != "https" or not parsed.netloc or parsed.query or parsed.fragment:
+        raise ValueError("CDN_PROXY_URL must be an HTTPS Worker endpoint without query or fragment.")
+    if len(secret) < 32:
+        raise ValueError("CDN_PROXY_SECRET must contain at least 32 characters.")
+    expires = str(int(time.time()) + 600)
+    message = (expires + "\n" + direct_url).encode("utf-8")
+    signature = hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
+    separator = "&" if "?" in endpoint else "?"
+    return endpoint + separator + urlencode({"u": direct_url, "e": expires, "s": signature})
+
+
 def send_telethon_url(item, caption, chat_id):
-    """Ask Telegram to fetch a large media URL; no local upload/custom HTTPS transport."""
+    """Ask Telegram to fetch a signed Worker URL that streams Instagram CDN bytes."""
     api_id = str(CONFIG.get("API_ID", "")).strip()
     api_hash = str(CONFIG.get("API_HASH", "")).strip()
     if not api_id or not api_hash:
         raise RuntimeError("API_ID and API_HASH are required for large-file Telethon sends.")
+    proxy_url = build_signed_cdn_proxy_url(item["direct_url"])
+    LOG.info(
+        "CDN proxy route selected: endpoint_host=%s; signed_url_ttl=600s; "
+        "source_host=%s; local_download=skipped.",
+        urlsplit(str(CONFIG.get("CDN_PROXY_URL", ""))).hostname or "<unknown>",
+        urlsplit(item["direct_url"]).hostname or "<unknown>",
+    )
 
     session_dir = ROOT / "telethon"
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -504,18 +533,18 @@ def send_telethon_url(item, caption, chat_id):
                 getattr(client.session, "port", None),
             )
             LOG.info(
-                "CDN URL send stage 3/4: calling send_file with external URL; "
-                "Telegram will fetch the media from the CDN (%.2f MB).",
+                "CDN proxy send stage 3/4: calling send_file with the signed relay URL; "
+                "Telegram will fetch the streamed media through the Worker (%.2f MB).",
                 item_size(item) / 1048576.0,
             )
             await client.send_file(
                 chat_id,
-                item["direct_url"],
+                proxy_url,
                 caption=(caption or "")[:1024] or None,
                 force_document=False,
                 supports_streaming=True,
             )
-            LOG.info("CDN URL send stage 4/4 complete: Telegram accepted and sent external media.")
+            LOG.info("CDN proxy send stage 4/4 complete: Telegram accepted and sent relayed external media.")
         finally:
             LOG.info("CDN URL send cleanup: disconnecting regular Telethon client.")
             await client.disconnect()
@@ -523,7 +552,7 @@ def send_telethon_url(item, caption, chat_id):
     try:
         asyncio.run(send_remote())
     except Exception as exc:
-        raise RuntimeError("Telethon CDN URL send failed (%s): %s" % (type(exc).__name__, exc)) from exc
+        raise RuntimeError("Telethon CDN proxy send failed (%s): %s" % (type(exc).__name__, exc)) from exc
 
 
 def send_telethon(item, caption, chat_id, force_document=False):
